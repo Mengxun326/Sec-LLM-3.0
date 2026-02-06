@@ -6,10 +6,18 @@
   <img src="https://img.shields.io/badge/Next.js-14-black.svg" alt="Next.js">
   <img src="https://img.shields.io/badge/TypeScript-5.0-3178C6.svg" alt="TypeScript">
   <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License">
+  <img src="https://img.shields.io/github/stars/yusichen396/sec-llm-local?style=social" alt="GitHub stars">
 </p>
 
 <p align="center">
   <b>第一作者：陈思宇</b> | 开发团队：灵犀网卫
+</p>
+
+<p align="center">
+  <a href="https://github.com/yusichen396/sec-llm-local">GitHub 仓库</a> •
+  <a href="#-快速开始">快速开始</a> •
+  <a href="#-功能特性">功能特性</a> •
+  <a href="#-api-文档">API 文档</a>
 </p>
 
 一个基于本地 LLM（Ollama）和云端 API（DeepSeek）的**网络安全专用**智能分析平台。集成了 RAG（检索增强生成）技术，提供日志分析、AI 对话、威胁检测和安全报告生成等功能。
@@ -699,12 +707,12 @@ export const yourApiCall = async (data: YourType): Promise<ResponseType> => {
 
 | 角色 | 姓名 | 说明 |
 |------|------|------|
-| **第一作者** | 陈思宇 | 项目负责人、核心开发 |
+| **第一作者** | 雨思晨 | 项目负责人、核心开发 |
 | **开发团队** | 灵犀网卫 | 网络安全技术团队 |
 
 ---
 
 <p align="center">
   <b>Sec-LLM-Local</b> - 网络安全专用大语言模型平台<br>
-  第一作者：<b>陈思宇</b> | 开发团队：<b>灵犀网卫</b>
+  第一作者：<b>雨思晨</b> | 开发团队：<b>灵犀网卫</b>
 </p>
