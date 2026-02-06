@@ -1,0 +1,1329 @@
+'use client';
+
+import { useEffect, useState, useRef } from 'react';
+import { useRouter } from 'next/navigation';
+import {
+  Home,
+  MessageSquare,
+  Eye,
+  FileText,
+  LogOut,
+  Shield,
+  Network,
+  Server,
+  Lock,
+  Search,
+  Bell,
+  User,
+  HelpCircle,
+  AlertTriangle,
+  UserX,
+  Info,
+  Ban,
+  CheckCircle,
+  Cpu,
+  HardDrive,
+  Wifi,
+  TrendingUp,
+  TrendingDown,
+  Clock,
+  Zap,
+  ArrowRight,
+} from 'lucide-react';
+import { type AnalysisResult, type UserInfo } from '@/lib/api';
+import {
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+} from 'recharts';
+
+interface DashboardStats {
+  totalThreats: { value: number; trend: number };
+  networkTraffic: { value: string; trend: number };
+  activeEndpoints: { value: number; trend: number };
+  securityScore: { value: number; trend: number };
+}
+
+interface RecentActivity {
+  id: number;
+  type: 'alert' | 'login' | 'info' | 'quarantine' | 'success';
+  message: string;
+  details: string;
+  timestamp: string;
+}
+
+interface SystemStatus {
+  cpu: { usage: number; cores: string };
+  memory: { used: string; total: string; status: string };
+  storage: { used: string; total: string; status: string };
+  network: { speed: string; ping: string; jitter: string };
+}
+
+// 生成随机统计数据
+const generateRandomStats = (): DashboardStats => {
+  // 随机生成威胁总数 (1500-3500)
+  const totalThreats = Math.floor(Math.random() * 2000) + 1500;
+  const threatsTrend = (Math.random() * 20 - 5).toFixed(1); // -5% 到 +15%
+  
+  // 随机生成网络流量 (30-60 TB)
+  const networkTrafficValue = (Math.random() * 30 + 30).toFixed(1);
+  const networkTrend = (Math.random() * 10 - 2).toFixed(1); // -2% 到 +8%
+  
+  // 随机生成活跃端点 (400-700)
+  const activeEndpoints = Math.floor(Math.random() * 300) + 400;
+  const endpointsTrend = (Math.random() * 5 - 3).toFixed(1); // -3% 到 +2%
+  
+  // 随机生成安全评分 (85-100)
+  const securityScore = Math.floor(Math.random() * 15) + 85;
+  const scoreTrend = (Math.random() * 2 - 0.5).toFixed(1); // -0.5% 到 +1.5%
+  
+  return {
+    totalThreats: { 
+      value: totalThreats, 
+      trend: parseFloat(threatsTrend) 
+    },
+    networkTraffic: { 
+      value: `${networkTrafficValue} TB`, 
+      trend: parseFloat(networkTrend) 
+    },
+    activeEndpoints: { 
+      value: activeEndpoints, 
+      trend: parseFloat(endpointsTrend) 
+    },
+    securityScore: { 
+      value: securityScore, 
+      trend: parseFloat(scoreTrend) 
+    },
+  };
+};
+
+const mockActivity: RecentActivity[] = [
+  {
+    id: 1,
+    type: 'alert',
+    message: 'SQL 注入攻击已阻止',
+    details: 'IP: 192.168.1.100 | 系统 | Endpoint-A1',
+    timestamp: '2 分钟前',
+  },
+  {
+    id: 2,
+    type: 'login',
+    message: '登录失败 (root)',
+    details: 'IP: 10.0.0.5 | 系统 | Backup Svc',
+    timestamp: '15 分钟前',
+  },
+  {
+    id: 3,
+    type: 'info',
+    message: '防火墙规则已更新',
+    details: '系统 | 管理员',
+    timestamp: '1 小时前',
+  },
+  {
+    id: 4,
+    type: 'quarantine',
+    message: '可疑文件已隔离',
+    details: 'Endpoint-B2 | 系统',
+    timestamp: '2 小时前',
+  },
+  {
+    id: 5,
+    type: 'success',
+    message: '每日备份已完成',
+    details: '系统 | Backup Svc',
+    timestamp: '3 小时前',
+  },
+];
+
+// 生成带随机浮动的系统状态数据（浮动控制在 10% 以内）
+const generateSystemStatus = (): SystemStatus => {
+  // 基准值
+  const baseCpuUsage = 45;
+  const baseMemoryUsed = 6.2;
+  const baseStorageUsed = 1.2;
+  const basePing = 12;
+  const baseJitter = 0.4;
+
+  // 随机浮动函数（-10% 到 +10%）
+  const randomFloat = (base: number) => {
+    const fluctuation = base * (Math.random() * 0.2 - 0.1); // -10% 到 +10%
+    return base + fluctuation;
+  };
+
+  return {
+    cpu: { 
+      usage: Math.round(randomFloat(baseCpuUsage)), 
+      cores: '12 核心运行中' 
+    },
+    memory: { 
+      used: `${randomFloat(baseMemoryUsed).toFixed(1)}GB`, 
+      total: '16GB', 
+      status: '健康' 
+    },
+    storage: { 
+      used: `${randomFloat(baseStorageUsed).toFixed(1)}TB`, 
+      total: '4TB', 
+      status: 'RAID 5 正常' 
+    },
+    network: { 
+      speed: '10Gbps 上行链路活跃', 
+      ping: `${Math.round(randomFloat(basePing))}ms`, 
+      jitter: `${randomFloat(baseJitter).toFixed(1)}ms` 
+    },
+  };
+};
+
+// 生成随机威胁流量分析图表数据
+const generateThreatTrafficData = () => {
+  const times = ['00:00', '04:00', '08:00', '12:00', '16:00', '20:00', '23:59'];
+  return times.map(time => ({
+    time,
+    threats: Math.floor(Math.random() * 80) + 5, // 5-85 之间的随机值
+  }));
+};
+
+const getActivityIcon = (type: RecentActivity['type']) => {
+  switch (type) {
+    case 'alert':
+      return <AlertTriangle className="w-4 h-4 text-red-400" />;
+    case 'login':
+      return <UserX className="w-4 h-4 text-orange-400" />;
+    case 'info':
+      return <Info className="w-4 h-4 text-blue-400" />;
+    case 'quarantine':
+      return <Ban className="w-4 h-4 text-red-500" />;
+    case 'success':
+      return <CheckCircle className="w-4 h-4 text-green-400" />;
+  }
+};
+
+interface LogAnalysisData {
+  analysisResult: AnalysisResult;
+  fileName: string;
+  savedAt: string;
+}
+
+interface Message {
+  role: 'user' | 'ai';
+  content: string;
+  sources?: string[];
+}
+
+interface SearchItem {
+  id: string;
+  title: string;
+  description: string;
+  keywords: string[];
+  path: string;
+  icon: React.ReactNode;
+  category: 'page' | 'function' | 'data';
+}
+
+export default function Dashboard() {
+  const router = useRouter();
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [activeMenu, setActiveMenu] = useState('dashboard');
+  const [logAnalysis, setLogAnalysis] = useState<LogAnalysisData | null>(null);
+  const [chatHistory, setChatHistory] = useState<Message[]>([]);
+  const [currentTime, setCurrentTime] = useState(new Date());
+  const [auditCount, setAuditCount] = useState(0);
+  const [dashboardStats, setDashboardStats] = useState<DashboardStats>(generateRandomStats());
+  const [threatTrafficData, setThreatTrafficData] = useState(generateThreatTrafficData());
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<SearchItem[]>([]);
+  const [showSearchResults, setShowSearchResults] = useState(false);
+  const [selectedIndex, setSelectedIndex] = useState(-1);
+  const [userInfo, setUserInfo] = useState<UserInfo | null>(null);
+  const [showUserMenu, setShowUserMenu] = useState(false);
+  const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
+  const [animatedCpu, setAnimatedCpu] = useState(0);
+  const [animatedMemory, setAnimatedMemory] = useState(0);
+  const [animatedStorage, setAnimatedStorage] = useState(0);
+  const searchContainerRef = useRef<HTMLDivElement>(null);
+  const userMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    // 检查认证状态
+    const token = localStorage.getItem('token');
+    if (!token) {
+      router.push('/login');
+      return;
+    }
+    setIsAuthenticated(true);
+    
+    // 读取用户信息
+    const savedUser = localStorage.getItem('user');
+    if (savedUser) {
+      try {
+        const parsedUser = JSON.parse(savedUser);
+        setUserInfo(parsedUser);
+      } catch (e) {
+        console.error('解析用户信息失败:', e);
+      }
+    }
+    
+    // 每次页面加载时生成新的随机统计数据
+    setDashboardStats(generateRandomStats());
+    setThreatTrafficData(generateThreatTrafficData());
+
+    // 从 localStorage 读取数据
+    try {
+      // 读取日志分析结果（兼容两个 key）
+      const latestLogReport = localStorage.getItem('cyberguard_latest_log_report');
+      const logAnalysisData = localStorage.getItem('cyberguard_log_analysis');
+      
+      const logData = latestLogReport || logAnalysisData;
+      if (logData) {
+        const parsedLog = JSON.parse(logData);
+        if (parsedLog.analysisResult) {
+          setLogAnalysis(parsedLog);
+        }
+      }
+
+      // 读取聊天记录
+      const savedChatHistory = localStorage.getItem('cyberguard_chat_history');
+      if (savedChatHistory) {
+        const parsedChat = JSON.parse(savedChatHistory);
+        if (Array.isArray(parsedChat) && parsedChat.length > 0) {
+          setChatHistory(parsedChat);
+        }
+      }
+
+      // 计算日志审计次数（检查是否有审计记录）
+      // 如果有日志分析数据，说明至少进行过1次审计
+      if (logData) {
+        setAuditCount(1);
+      } else {
+        // 也可以检查是否有历史审计记录（如果将来需要）
+        setAuditCount(0);
+      }
+    } catch (error) {
+      console.error('读取数据失败:', error);
+    }
+  }, [router]);
+
+  // 更新时间
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // 生成系统状态数据并启动动画
+  useEffect(() => {
+    // 生成随机系统状态
+    const newStatus = generateSystemStatus();
+    setSystemStatus(newStatus);
+
+    // 重置动画值
+    setAnimatedCpu(0);
+    setAnimatedMemory(0);
+    setAnimatedStorage(0);
+
+    // 动画持续时间（毫秒）
+    const animationDuration = 1500;
+    const steps = 60; // 动画帧数
+    const stepDuration = animationDuration / steps;
+
+    let currentStep = 0;
+
+    const animationInterval = setInterval(() => {
+      currentStep++;
+      const progress = currentStep / steps;
+      // 使用 easeOutQuad 缓动函数
+      const easedProgress = 1 - (1 - progress) * (1 - progress);
+
+      setAnimatedCpu(Math.round(newStatus.cpu.usage * easedProgress));
+      
+      const memoryUsed = parseFloat(newStatus.memory.used);
+      const memoryTotal = parseFloat(newStatus.memory.total);
+      setAnimatedMemory((memoryUsed / memoryTotal) * 100 * easedProgress);
+
+      const storageUsed = parseFloat(newStatus.storage.used);
+      const storageTotal = parseFloat(newStatus.storage.total);
+      setAnimatedStorage((storageUsed / storageTotal) * 100 * easedProgress);
+
+      if (currentStep >= steps) {
+        clearInterval(animationInterval);
+      }
+    }, stepDuration);
+
+    return () => clearInterval(animationInterval);
+  }, []);
+
+  // 获取威胁等级
+  const threatLevel = logAnalysis?.analysisResult?.threat_level || 'Low';
+  const isUnderAttack = threatLevel === 'High' || threatLevel === 'Critical';
+
+  // 计算统计数据
+  const threatCount = logAnalysis?.analysisResult?.details?.length || 0;
+  const aiInteractionCount = chatHistory.length;
+  // auditCount 已在 useEffect 中设置
+
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    setShowUserMenu(false);
+    router.push('/login');
+  };
+
+  const handleMenuClick = (menu: string) => {
+    setActiveMenu(menu);
+    if (menu === 'dashboard') {
+      router.push('/');
+    } else if (menu === 'chat') {
+      router.push('/chat');
+    } else if (menu === 'analysis') {
+      router.push('/log-analysis');
+    } else if (menu === 'reports') {
+      router.push('/report-generation');
+    }
+  };
+
+  // 搜索数据源
+  const searchItems: SearchItem[] = [
+    {
+      id: 'dashboard',
+      title: '仪表盘',
+      description: '查看安全概览和系统统计',
+      keywords: ['仪表盘', 'dashboard', '概览', '统计', '首页', '主页'],
+      path: '/',
+      icon: <Home className="w-4 h-4" />,
+      category: 'page',
+    },
+    {
+      id: 'chat',
+      title: 'AI智能回答',
+      description: 'AI 安全专家对话，支持 RAG 检索',
+      keywords: ['对话', 'chat', '问答', 'ai', '智能', '攻防', '专家', '咨询'],
+      path: '/chat',
+      icon: <MessageSquare className="w-4 h-4" />,
+      category: 'page',
+    },
+    {
+      id: 'log-analysis',
+      title: '日志分析',
+      description: '上传日志文件进行 AI 威胁分析',
+      keywords: ['日志', 'log', '分析', '分析', '审计', '威胁', '检测', '上传'],
+      path: '/log-analysis',
+      icon: <Eye className="w-4 h-4" />,
+      category: 'page',
+    },
+    {
+      id: 'report',
+      title: '报告生成',
+      description: '生成安全审计报告（PDF/Markdown）',
+      keywords: ['报告', 'report', '生成', '导出', 'pdf', 'markdown', '审计报告'],
+      path: '/report-generation',
+      icon: <FileText className="w-4 h-4" />,
+      category: 'page',
+    },
+    {
+      id: 'threats',
+      title: '威胁检测',
+      description: '查看已检测到的威胁详情',
+      keywords: ['威胁', 'threat', '攻击', '安全', '检测', '阻止'],
+      path: '/',
+      icon: <AlertTriangle className="w-4 h-4" />,
+      category: 'function',
+    },
+    {
+      id: 'network',
+      title: '网络流量',
+      description: '查看网络流量统计',
+      keywords: ['网络', 'network', '流量', 'traffic', '带宽'],
+      path: '/',
+      icon: <Network className="w-4 h-4" />,
+      category: 'function',
+    },
+    {
+      id: 'endpoints',
+      title: '活跃端点',
+      description: '查看活跃端点统计',
+      keywords: ['端点', 'endpoint', '服务器', 'server', '活跃'],
+      path: '/',
+      icon: <Server className="w-4 h-4" />,
+      category: 'function',
+    },
+    {
+      id: 'security-score',
+      title: '安全评分',
+      description: '查看系统安全评分',
+      keywords: ['安全', 'security', '评分', 'score', '等级'],
+      path: '/',
+      icon: <Lock className="w-4 h-4" />,
+      category: 'function',
+    },
+  ];
+
+  // 模糊搜索函数
+  const fuzzySearch = (query: string): SearchItem[] => {
+    if (!query.trim()) {
+      return [];
+    }
+
+    const lowerQuery = query.toLowerCase();
+    const results: SearchItem[] = [];
+
+    searchItems.forEach((item) => {
+      let score = 0;
+      
+      // 标题完全匹配（最高优先级）
+      if (item.title.toLowerCase().includes(lowerQuery)) {
+        score += 100;
+      }
+      
+      // 标题开头匹配
+      if (item.title.toLowerCase().startsWith(lowerQuery)) {
+        score += 50;
+      }
+      
+      // 描述匹配
+      if (item.description.toLowerCase().includes(lowerQuery)) {
+        score += 30;
+      }
+      
+      // 关键词匹配
+      item.keywords.forEach((keyword) => {
+        if (keyword.toLowerCase().includes(lowerQuery)) {
+          score += 20;
+        }
+        if (keyword.toLowerCase() === lowerQuery) {
+          score += 10;
+        }
+      });
+
+      // 字符包含匹配（模糊搜索）
+      const queryChars = lowerQuery.split('');
+      const titleLower = item.title.toLowerCase();
+      let charMatchCount = 0;
+      let lastIndex = -1;
+      
+      queryChars.forEach((char) => {
+        const index = titleLower.indexOf(char, lastIndex + 1);
+        if (index !== -1) {
+          charMatchCount++;
+          lastIndex = index;
+        }
+      });
+      
+      if (charMatchCount === queryChars.length) {
+        score += 10;
+      }
+
+      if (score > 0) {
+        results.push({ ...item, id: `${item.id}-${score}` });
+      }
+    });
+
+    // 按分数排序
+    return results
+      .sort((a, b) => {
+        const scoreA = parseInt(a.id.split('-').pop() || '0');
+        const scoreB = parseInt(b.id.split('-').pop() || '0');
+        return scoreB - scoreA;
+      })
+      .slice(0, 6) // 最多显示 6 个结果
+      .map((item) => ({
+        ...item,
+        id: item.id.split('-').slice(0, -1).join('-'),
+      }));
+  };
+
+  // 处理搜索输入
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const query = e.target.value;
+    setSearchQuery(query);
+    setSelectedIndex(-1);
+    
+    if (query.trim()) {
+      const results = fuzzySearch(query);
+      setSearchResults(results);
+      setShowSearchResults(true);
+    } else {
+      setSearchResults([]);
+      setShowSearchResults(false);
+    }
+  };
+
+  // 处理键盘事件
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!showSearchResults || searchResults.length === 0) return;
+
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        setSelectedIndex((prev) => 
+          prev < searchResults.length - 1 ? prev + 1 : prev
+        );
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        setSelectedIndex((prev) => (prev > 0 ? prev - 1 : -1));
+        break;
+      case 'Enter':
+        e.preventDefault();
+        if (selectedIndex >= 0 && selectedIndex < searchResults.length) {
+          handleSearchResultClick(searchResults[selectedIndex]);
+        } else if (searchResults.length > 0) {
+          handleSearchResultClick(searchResults[0]);
+        }
+        break;
+      case 'Escape':
+        setShowSearchResults(false);
+        setSearchQuery('');
+        setSelectedIndex(-1);
+        break;
+    }
+  };
+
+  // 处理搜索结果点击
+  const handleSearchResultClick = (item: SearchItem) => {
+    setSearchQuery('');
+    setShowSearchResults(false);
+    setSearchResults([]);
+    
+    // 根据路径跳转
+    if (item.path === '/') {
+      handleMenuClick('dashboard');
+    } else if (item.path === '/chat') {
+      handleMenuClick('chat');
+    } else if (item.path === '/log-analysis') {
+      handleMenuClick('analysis');
+    } else if (item.path === '/report-generation') {
+      handleMenuClick('reports');
+    }
+    
+    router.push(item.path);
+  };
+
+  // 点击外部关闭搜索结果
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (searchContainerRef.current && !searchContainerRef.current.contains(event.target as Node)) {
+        setShowSearchResults(false);
+      }
+    };
+
+    if (showSearchResults) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [showSearchResults]);
+
+  // 点击外部关闭用户菜单
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
+        setShowUserMenu(false);
+      }
+    };
+
+    if (showUserMenu) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [showUserMenu]);
+
+  // 如果未认证，不渲染内容
+  if (!isAuthenticated) {
+    return null;
+  }
+
+  return (
+    <div className="flex h-screen bg-slate-950 overflow-hidden">
+      {/* 左侧固定侧边栏 */}
+      <aside className="w-64 bg-slate-900 flex flex-col border-r border-slate-800">
+        {/* Logo */}
+        <div className="p-6 border-b border-slate-800">
+          <div className="flex items-center gap-2">
+            <Shield className="w-8 h-8 text-cyan-400" />
+            <div className="flex flex-col">
+              <span className="text-xl font-bold text-white leading-tight">灵犀网卫</span>
+              <span className="text-xl font-bold text-white leading-tight">Sec-LLM</span>
+            </div>
+          </div>
+        </div>
+
+        {/* 导航菜单 */}
+        <nav className="flex-1 p-4 space-y-2">
+          <button
+            onClick={() => handleMenuClick('dashboard')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${
+              activeMenu === 'dashboard'
+                ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
+                : 'text-gray-400 hover:text-white hover:bg-slate-800/50'
+            }`}
+          >
+            <Home className="w-5 h-5" />
+            <span className="font-medium">仪表盘</span>
+          </button>
+
+          <button
+            onClick={() => handleMenuClick('chat')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${
+              activeMenu === 'chat'
+                ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
+                : 'text-gray-400 hover:text-white hover:bg-slate-800/50'
+            }`}
+          >
+            <MessageSquare className="w-5 h-5" />
+            <span className="font-medium">AI智能回答</span>
+          </button>
+
+          <button
+            onClick={() => handleMenuClick('analysis')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${
+              activeMenu === 'analysis'
+                ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
+                : 'text-gray-400 hover:text-white hover:bg-slate-800/50'
+            }`}
+          >
+            <Eye className="w-5 h-5" />
+            <span className="font-medium">日志分析</span>
+          </button>
+
+          <button
+            onClick={() => handleMenuClick('reports')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${
+              activeMenu === 'reports'
+                ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
+                : 'text-gray-400 hover:text-white hover:bg-slate-800/50'
+            }`}
+          >
+            <FileText className="w-5 h-5" />
+            <span className="font-medium">报告生成</span>
+          </button>
+        </nav>
+
+        {/* 系统状态 */}
+        <div className="p-4 border-t border-slate-800">
+          <div className="flex items-center gap-2 mb-2">
+            <div className="w-2 h-2 bg-green-400 rounded-full"></div>
+            <span className="text-sm text-gray-400">系统安全</span>
+          </div>
+          <p className="text-xs text-gray-500">上次扫描: 2 分钟前</p>
+        </div>
+
+        {/* 登出按钮 */}
+        <div className="p-4 border-t border-slate-800">
+          <button
+            onClick={handleLogout}
+            className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-gray-400 hover:text-white hover:bg-slate-800/50 transition-all"
+          >
+            <LogOut className="w-5 h-5" />
+            <span className="font-medium">登出</span>
+          </button>
+        </div>
+      </aside>
+
+      {/* 主内容区域 */}
+      <main className="flex-1 flex flex-col overflow-hidden">
+        {/* 顶部导航栏 */}
+        <header className="h-16 bg-slate-900/50 backdrop-blur border-b border-white/5 flex items-center justify-between px-6 relative z-50">
+          <h1 className="text-xl font-bold text-white">仪表盘</h1>
+          
+          <div className="flex items-center gap-4">
+            {/* 搜索框 */}
+            <div className="relative search-container" ref={searchContainerRef}>
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 z-10" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={handleSearchChange}
+                onKeyDown={handleSearchKeyDown}
+                onFocus={() => {
+                  if (searchQuery.trim() && searchResults.length > 0) {
+                    setShowSearchResults(true);
+                  }
+                }}
+                placeholder="搜索日志、IP、威胁..."
+                className="pl-10 pr-4 py-2 bg-slate-800/50 border border-white/5 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 w-64"
+              />
+              
+              {/* 搜索结果下拉列表 */}
+              {showSearchResults && searchResults.length > 0 && (
+                <div className="absolute top-full left-0 mt-2 w-96 bg-slate-900 border border-slate-700 rounded-lg shadow-2xl z-50 max-h-96 overflow-y-auto">
+                  <div className="p-2">
+                    {searchResults.map((item, index) => (
+                      <button
+                        key={item.id}
+                        onClick={() => handleSearchResultClick(item)}
+                        onMouseEnter={() => setSelectedIndex(index)}
+                        className={`w-full flex items-start gap-3 p-3 rounded-lg transition-colors text-left group ${
+                          selectedIndex === index
+                            ? 'bg-cyan-500/20 border border-cyan-500/30'
+                            : 'hover:bg-slate-800/50'
+                        }`}
+                      >
+                        <div className="mt-0.5 text-cyan-400 group-hover:text-cyan-300">
+                          {item.icon}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="font-semibold text-white group-hover:text-cyan-400 transition-colors">
+                              {item.title}
+                            </span>
+                            <span className="text-xs px-2 py-0.5 bg-slate-700 text-gray-400 rounded">
+                              {item.category === 'page' ? '页面' : item.category === 'function' ? '功能' : '数据'}
+                            </span>
+                          </div>
+                          <p className="text-xs text-gray-400 line-clamp-1">
+                            {item.description}
+                          </p>
+                        </div>
+                        <ArrowRight className="w-4 h-4 text-gray-500 group-hover:text-cyan-400 transition-colors flex-shrink-0 mt-1" />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              {/* 无结果提示 */}
+              {showSearchResults && searchQuery.trim() && searchResults.length === 0 && (
+                <div className="absolute top-full left-0 mt-2 w-96 bg-slate-900 border border-slate-700 rounded-lg shadow-2xl z-50 p-4">
+                  <p className="text-sm text-gray-400 text-center">未找到相关结果</p>
+                </div>
+              )}
+            </div>
+
+            {/* 用户信息 */}
+            <div className="flex items-center gap-3">
+              <div className="relative group">
+                <button className="p-2 text-gray-400 hover:text-white transition-colors">
+                  <Bell className="w-5 h-5" />
+                </button>
+                {/* Tooltip */}
+                <div className="absolute right-0 top-full mt-2 px-3 py-1.5 bg-slate-800 text-white text-xs rounded-lg shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 whitespace-nowrap z-50 pointer-events-none">
+                  没有通知
+                  <div className="absolute -top-1 right-4 w-2 h-2 bg-slate-800 rotate-45"></div>
+                </div>
+              </div>
+              <div className="relative group">
+                <button className="p-2 text-gray-400 hover:text-white transition-colors">
+                  <HelpCircle className="w-5 h-5" />
+                </button>
+                {/* Tooltip */}
+                <div className="absolute right-0 top-full mt-2 px-3 py-1.5 bg-slate-800 text-white text-xs rounded-lg shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 whitespace-nowrap z-50 pointer-events-none">
+                  帮助
+                  <div className="absolute -top-1 right-4 w-2 h-2 bg-slate-800 rotate-45"></div>
+                </div>
+              </div>
+              {/* 用户头像和信息 */}
+              <div className="relative z-[9999]" ref={userMenuRef}>
+                <button
+                  onClick={() => setShowUserMenu(!showUserMenu)}
+                  className="flex items-center gap-2 hover:bg-slate-800/50 rounded-lg p-1.5 transition-colors"
+                >
+                  <div className="w-8 h-8 rounded-full bg-cyan-500/20 flex items-center justify-center border border-cyan-500/30">
+                    <User className="w-4 h-4 text-cyan-400" />
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-medium text-white">
+                      {userInfo?.full_name || userInfo?.username || '用户'}
+                    </p>
+                    <p className="text-xs text-gray-400">
+                      {userInfo?.role === 'admin' ? '系统管理员' : '普通用户'}
+                    </p>
+                  </div>
+                </button>
+
+                {/* 用户信息悬浮卡片 - 使用 fixed 定位确保在最顶层 */}
+                {showUserMenu && (
+                  <div className="fixed top-16 right-6 w-72 bg-slate-900 border border-slate-700 rounded-lg shadow-2xl z-[9999] overflow-hidden">
+                    {/* 头部背景 */}
+                    <div className="bg-gradient-to-r from-cyan-500/20 to-blue-500/20 p-4 border-b border-slate-700">
+                      <div className="flex items-center gap-3">
+                        <div className="w-12 h-12 rounded-full bg-cyan-500/30 flex items-center justify-center border-2 border-cyan-500/50">
+                          <User className="w-6 h-6 text-cyan-400" />
+                        </div>
+                        <div>
+                          <p className="text-lg font-semibold text-white">
+                            {userInfo?.full_name || userInfo?.username || '用户'}
+                          </p>
+                          <p className="text-sm text-cyan-400">@{userInfo?.username || 'user'}</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 用户详情 */}
+                    <div className="p-4 space-y-3">
+                      <div className="flex items-center gap-3 text-sm">
+                        <div className="w-8 h-8 rounded-lg bg-slate-800 flex items-center justify-center">
+                          <Shield className="w-4 h-4 text-cyan-400" />
+                        </div>
+                        <div>
+                          <p className="text-gray-400 text-xs">角色</p>
+                          <p className="text-white font-medium">
+                            {userInfo?.role === 'admin' ? '系统管理员' : '普通用户'}
+                          </p>
+                        </div>
+                      </div>
+
+                      {userInfo?.email && (
+                        <div className="flex items-center gap-3 text-sm">
+                          <div className="w-8 h-8 rounded-lg bg-slate-800 flex items-center justify-center">
+                            <svg className="w-4 h-4 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                            </svg>
+                          </div>
+                          <div>
+                            <p className="text-gray-400 text-xs">邮箱</p>
+                            <p className="text-white font-medium">{userInfo.email}</p>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="flex items-center gap-3 text-sm">
+                        <div className="w-8 h-8 rounded-lg bg-slate-800 flex items-center justify-center">
+                          <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                        </div>
+                        <div>
+                          <p className="text-gray-400 text-xs">状态</p>
+                          <p className="text-green-400 font-medium">在线</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 操作按钮 */}
+                    <div className="border-t border-slate-700 p-2">
+                      <button
+                        onClick={handleLogout}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                      >
+                        <LogOut className="w-4 h-4" />
+                        <span>退出登录</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </header>
+
+        {/* 可滚动内容 */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-6 relative z-0">
+          {/* 安全概览 */}
+          <div>
+            <div className="mb-4">
+              <h2 className="text-2xl font-bold text-white mb-1">安全概览</h2>
+              <p className="text-sm text-gray-400">实时威胁监控和系统状态</p>
+            </div>
+
+            <div className="grid grid-cols-4 gap-4">
+              {/* 统计卡片 */}
+              <div className="bg-slate-900/50 backdrop-blur border border-white/5 rounded-lg p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <Shield className="w-8 h-8 text-cyan-400" />
+                  {dashboardStats.totalThreats.trend > 0 ? (
+                    <div className="flex items-center gap-1 text-green-400 text-sm">
+                      <TrendingUp className="w-4 h-4" />
+                      <span>+{dashboardStats.totalThreats.trend.toFixed(1)}%</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1 text-red-400 text-sm">
+                      <TrendingDown className="w-4 h-4" />
+                      <span>{dashboardStats.totalThreats.trend.toFixed(1)}%</span>
+                    </div>
+                  )}
+                </div>
+                <p className="text-3xl font-bold text-white mb-1">
+                  {dashboardStats.totalThreats.value.toLocaleString()}
+                </p>
+                <p className="text-sm text-gray-400">已阻止威胁总数</p>
+              </div>
+
+              <div className="bg-slate-900/50 backdrop-blur border border-white/5 rounded-lg p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <Network className="w-8 h-8 text-cyan-400" />
+                  {dashboardStats.networkTraffic.trend > 0 ? (
+                    <div className="flex items-center gap-1 text-green-400 text-sm">
+                      <TrendingUp className="w-4 h-4" />
+                      <span>+{dashboardStats.networkTraffic.trend.toFixed(1)}%</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1 text-red-400 text-sm">
+                      <TrendingDown className="w-4 h-4" />
+                      <span>{dashboardStats.networkTraffic.trend.toFixed(1)}%</span>
+                    </div>
+                  )}
+                </div>
+                <p className="text-3xl font-bold text-white mb-1">
+                  {dashboardStats.networkTraffic.value}
+                </p>
+                <p className="text-sm text-gray-400">网络流量</p>
+              </div>
+
+              <div className="bg-slate-900/50 backdrop-blur border border-white/5 rounded-lg p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <Server className="w-8 h-8 text-cyan-400" />
+                  {dashboardStats.activeEndpoints.trend > 0 ? (
+                    <div className="flex items-center gap-1 text-green-400 text-sm">
+                      <TrendingUp className="w-4 h-4" />
+                      <span>+{dashboardStats.activeEndpoints.trend.toFixed(1)}%</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1 text-red-400 text-sm">
+                      <TrendingDown className="w-4 h-4" />
+                      <span>{dashboardStats.activeEndpoints.trend.toFixed(1)}%</span>
+                    </div>
+                  )}
+                </div>
+                <p className="text-3xl font-bold text-white mb-1">
+                  {dashboardStats.activeEndpoints.value}
+                </p>
+                <p className="text-sm text-gray-400">活跃端点</p>
+              </div>
+
+              <div className="bg-slate-900/50 backdrop-blur border border-white/5 rounded-lg p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <Lock className="w-8 h-8 text-cyan-400" />
+                  {dashboardStats.securityScore.trend > 0 ? (
+                    <div className="flex items-center gap-1 text-green-400 text-sm">
+                      <TrendingUp className="w-4 h-4" />
+                      <span>+{dashboardStats.securityScore.trend.toFixed(1)}%</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1 text-red-400 text-sm">
+                      <TrendingDown className="w-4 h-4" />
+                      <span>{dashboardStats.securityScore.trend.toFixed(1)}%</span>
+                    </div>
+                  )}
+                </div>
+                <p className="text-3xl font-bold text-white mb-1">
+                  {dashboardStats.securityScore.value}%
+                </p>
+                <p className="text-sm text-gray-400">安全评分</p>
+              </div>
+            </div>
+          </div>
+
+          {/* 中间行 */}
+          <div className="grid grid-cols-3 gap-6">
+            {/* 威胁流量分析图表 */}
+            <div className="col-span-2 bg-slate-900/50 backdrop-blur border border-white/5 rounded-lg p-6">
+              <h3 className="text-lg font-semibold text-white mb-4">威胁流量分析</h3>
+              <ResponsiveContainer width="100%" height={300}>
+                <AreaChart data={threatTrafficData}>
+                  <defs>
+                    <linearGradient id="colorThreats" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.8} />
+                      <stop offset="95%" stopColor="#06b6d4" stopOpacity={0.1} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                  <XAxis
+                    dataKey="time"
+                    stroke="#94a3b8"
+                    style={{ fontSize: '12px' }}
+                  />
+                  <YAxis stroke="#94a3b8" style={{ fontSize: '12px' }} />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: '#1e293b',
+                      border: '1px solid rgba(255, 255, 255, 0.1)',
+                      borderRadius: '8px',
+                      color: '#fff',
+                    }}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="threats"
+                    stroke="#06b6d4"
+                    strokeWidth={2}
+                    fillOpacity={1}
+                    fill="url(#colorThreats)"
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* 统计卡片 */}
+            <div className="bg-slate-900/50 backdrop-blur border border-white/5 rounded-lg p-6">
+              <h3 className="text-lg font-semibold text-white mb-4">系统统计</h3>
+              <div className="grid grid-cols-2 gap-4">
+                {/* 威胁检测 */}
+                <div className="bg-slate-800/50 border border-red-500/20 rounded-lg p-4 hover:border-red-500/40 transition-all">
+                  <div className="flex items-center justify-between mb-2">
+                    <AlertTriangle className="w-6 h-6 text-red-400" />
+                    <div className="text-right">
+                      <p className="text-2xl font-bold text-white">{threatCount}</p>
+                      <p className="text-xs text-gray-400">威胁检测</p>
+                    </div>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-2">
+                    {threatCount > 0 ? '最近一次检测到的威胁数量' : '暂无威胁检测'}
+                  </p>
+                </div>
+
+                {/* AI 交互 */}
+                <div className="bg-slate-800/50 border border-purple-500/20 rounded-lg p-4 hover:border-purple-500/40 transition-all">
+                  <div className="flex items-center justify-between mb-2">
+                    <MessageSquare className="w-6 h-6 text-purple-400" />
+                    <div className="text-right">
+                      <p className="text-2xl font-bold text-white">{aiInteractionCount}</p>
+                      <p className="text-xs text-gray-400">AI 交互</p>
+                    </div>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-2">
+                    {aiInteractionCount > 0 ? '已进行的对话次数' : '暂无对话记录'}
+                  </p>
+                </div>
+
+                {/* 日志审计 */}
+                <div className="bg-slate-800/50 border border-cyan-500/20 rounded-lg p-4 hover:border-cyan-500/40 transition-all">
+                  <div className="flex items-center justify-between mb-2">
+                    <Eye className="w-6 h-6 text-cyan-400" />
+                    <div className="text-right">
+                      <p className="text-2xl font-bold text-white">{auditCount}</p>
+                      <p className="text-xs text-gray-400">日志审计</p>
+                    </div>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-2">
+                    {auditCount > 0 ? '已进行审计的次数' : '暂无审计记录'}
+                  </p>
+                </div>
+
+                {/* 防御等级 */}
+                <div className="bg-slate-800/50 border border-green-500/20 rounded-lg p-4 hover:border-green-500/40 transition-all">
+                  <div className="flex items-center justify-between mb-2">
+                    <Shield className="w-6 h-6 text-green-400" />
+                    <div className="text-right">
+                      <p className="text-lg font-bold text-white">Level 4</p>
+                      <p className="text-xs text-green-400">(Active)</p>
+                    </div>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-2">防御等级</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 底部行 */}
+          <div className="grid grid-cols-2 gap-6">
+            {/* 欢迎区域和状态指示器 */}
+            <div className="bg-slate-900/50 backdrop-blur border border-white/5 rounded-lg p-6">
+              {/* 欢迎区域 */}
+              <div className="mb-6">
+                <h2 className="text-2xl font-bold text-white mb-2">Welcome back, Commander.</h2>
+                <div className="flex items-center gap-2 text-gray-400">
+                  <Clock className="w-4 h-4" />
+                  <span className="text-sm font-mono">
+                    {currentTime.toLocaleString('zh-CN', {
+                      year: 'numeric',
+                      month: '2-digit',
+                      day: '2-digit',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      second: '2-digit',
+                    })}
+                  </span>
+                </div>
+              </div>
+
+              {/* 核心状态指示器 */}
+              <div className="flex items-center gap-6">
+                {/* 状态球体 - 带呼吸灯动画 */}
+                <div className="relative">
+                  <div
+                    className={`w-24 h-24 rounded-full flex items-center justify-center border-4 ${
+                      isUnderAttack
+                        ? 'bg-red-500/20 border-red-500 shadow-red-500/50'
+                        : 'bg-green-500/20 border-green-500 shadow-green-500/50'
+                    } shadow-lg`}
+                    style={{
+                      animation: isUnderAttack
+                        ? 'pulse-red 2s ease-in-out infinite'
+                        : 'pulse-green 2s ease-in-out infinite',
+                    }}
+                  >
+                    <div
+                      className={`w-16 h-16 rounded-full ${
+                        isUnderAttack ? 'bg-red-500' : 'bg-green-500'
+                      }`}
+                      style={{
+                        animation: isUnderAttack
+                          ? 'pulse-red-inner 2s ease-in-out infinite'
+                          : 'pulse-green-inner 2s ease-in-out infinite',
+                      }}
+                    ></div>
+                  </div>
+                  {/* 外圈光晕 */}
+                  <div
+                    className={`absolute inset-0 rounded-full ${
+                      isUnderAttack ? 'bg-red-500/30' : 'bg-green-500/30'
+                    }`}
+                    style={{
+                      animation: isUnderAttack
+                        ? 'pulse-red-outer 2s ease-in-out infinite'
+                        : 'pulse-green-outer 2s ease-in-out infinite',
+                      transform: 'scale(1.2)',
+                    }}
+                  ></div>
+                </div>
+
+                {/* 状态文本 */}
+                <div className="flex-1">
+                  <div
+                    className={`text-2xl font-bold mb-2 ${
+                      isUnderAttack ? 'text-red-400' : 'text-green-400'
+                    }`}
+                  >
+                    {isUnderAttack ? 'SYSTEM UNDER ATTACK' : 'SYSTEM SECURE'}
+                  </div>
+                  <p className="text-sm text-gray-400">
+                    {isUnderAttack
+                      ? `威胁等级: ${threatLevel} | 建议立即采取行动`
+                      : '所有系统运行正常 | 无威胁检测'}
+                  </p>
+                  {logAnalysis && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      最新分析: {logAnalysis.fileName || '未知文件'}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* 快捷入口 */}
+              <div className="mt-6 grid grid-cols-3 gap-3">
+                <button
+                  onClick={() => router.push('/log-analysis')}
+                  className="group relative overflow-hidden bg-slate-800/50 hover:bg-slate-800 border border-white/5 rounded-lg p-4 transition-all hover:border-cyan-500/50 hover:shadow-lg hover:shadow-cyan-500/20"
+                >
+                  <div className="flex flex-col items-center gap-2">
+                    <div className="w-10 h-10 rounded-lg bg-cyan-500/20 flex items-center justify-center group-hover:bg-cyan-500/30 transition-colors">
+                      <Eye className="w-5 h-5 text-cyan-400" />
+                    </div>
+                    <span className="text-xs font-medium text-white">启动日志审计</span>
+                  </div>
+                </button>
+
+                <button
+                  onClick={() => router.push('/chat')}
+                  className="group relative overflow-hidden bg-slate-800/50 hover:bg-slate-800 border border-white/5 rounded-lg p-4 transition-all hover:border-purple-500/50 hover:shadow-lg hover:shadow-purple-500/20"
+                >
+                  <div className="flex flex-col items-center gap-2">
+                    <div className="w-10 h-10 rounded-lg bg-purple-500/20 flex items-center justify-center group-hover:bg-purple-500/30 transition-colors">
+                      <MessageSquare className="w-5 h-5 text-purple-400" />
+                    </div>
+                    <span className="text-xs font-medium text-white">咨询 AI 专家</span>
+                  </div>
+                </button>
+
+                <button
+                  onClick={() => router.push('/report-generation')}
+                  className="group relative overflow-hidden bg-slate-800/50 hover:bg-slate-800 border border-white/5 rounded-lg p-4 transition-all hover:border-pink-500/50 hover:shadow-lg hover:shadow-pink-500/20"
+                >
+                  <div className="flex flex-col items-center gap-2">
+                    <div className="w-10 h-10 rounded-lg bg-pink-500/20 flex items-center justify-center group-hover:bg-pink-500/30 transition-colors">
+                      <FileText className="w-5 h-5 text-pink-400" />
+                    </div>
+                    <span className="text-xs font-medium text-white">生成安全报告</span>
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            {/* 系统状态 */}
+            <div className="bg-slate-900/50 backdrop-blur border border-white/5 rounded-lg p-6">
+              <h3 className="text-lg font-semibold text-white mb-4">系统状态</h3>
+              <div className="space-y-6">
+                {/* CPU */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <Cpu className="w-5 h-5 text-cyan-400" />
+                      <span className="text-sm font-medium text-white">CPU 使用率</span>
+                    </div>
+                    <span className="text-sm font-bold text-white font-mono">
+                      {animatedCpu}%
+                    </span>
+                  </div>
+                  <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+                    <div
+                      className="bg-gradient-to-r from-green-500 to-green-400 h-2 rounded-full transition-all duration-100 ease-out"
+                      style={{ width: `${animatedCpu}%` }}
+                    ></div>
+                  </div>
+                  <p className="text-xs text-gray-400 mt-1">
+                    {systemStatus?.cpu.cores || '加载中...'}
+                  </p>
+                </div>
+
+                {/* 内存 */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <HardDrive className="w-5 h-5 text-blue-400" />
+                      <span className="text-sm font-medium text-white">内存</span>
+                    </div>
+                    <span className="text-sm font-bold text-white font-mono">
+                      {systemStatus ? systemStatus.memory.used : '0GB'} / {systemStatus?.memory.total || '16GB'}
+                    </span>
+                  </div>
+                  <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+                    <div
+                      className="bg-gradient-to-r from-blue-500 to-blue-400 h-2 rounded-full transition-all duration-100 ease-out"
+                      style={{ width: `${animatedMemory}%` }}
+                    ></div>
+                  </div>
+                  <p className="text-xs text-gray-400 mt-1">
+                    {systemStatus?.memory.status || '加载中...'}
+                  </p>
+                </div>
+
+                {/* 存储 */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <HardDrive className="w-5 h-5 text-purple-400" />
+                      <span className="text-sm font-medium text-white">存储</span>
+                    </div>
+                    <span className="text-sm font-bold text-white font-mono">
+                      {systemStatus ? systemStatus.storage.used : '0TB'} / {systemStatus?.storage.total || '4TB'}
+                    </span>
+                  </div>
+                  <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+                    <div
+                      className="bg-gradient-to-r from-purple-500 to-purple-400 h-2 rounded-full transition-all duration-100 ease-out"
+                      style={{ width: `${animatedStorage}%` }}
+                    ></div>
+                  </div>
+                  <p className="text-xs text-gray-400 mt-1">
+                    {systemStatus?.storage.status || '加载中...'}
+                  </p>
+                </div>
+
+                {/* 网络状态 */}
+                <div className="bg-slate-800/50 rounded-lg p-4 border border-white/5">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Wifi className="w-5 h-5 text-cyan-400 animate-pulse" />
+                    <span className="text-sm font-medium text-white">
+                      {systemStatus?.network.speed || '连接中...'}
+                    </span>
+                  </div>
+                  <div className="flex gap-4 text-xs text-gray-400 font-mono">
+                    <span>延迟: {systemStatus?.network.ping || '--'}</span>
+                    <span>抖动: {systemStatus?.network.jitter || '--'}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}
