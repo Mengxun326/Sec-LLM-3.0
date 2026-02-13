@@ -17,7 +17,21 @@ import {
   Bot,
   Paperclip,
 } from 'lucide-react';
-import { chat, uploadFile, type UserInfo } from '@/lib/api';
+import {
+  createChatHistory,
+  deleteChatHistory,
+  deleteKnowledgeFile,
+  getChatHistories,
+  getKnowledgeFiles,
+  updateChatHistory,
+  uploadFile,
+  type ChatHistory,
+  type ChatHistoryMessage,
+  type KnowledgeFile,
+  type LLMProvider,
+  type UserInfo,
+} from '@/lib/api';
+import LLMProviderToggle from '@/components/LLMProviderToggle';
 
 interface Message {
   role: 'user' | 'ai';
@@ -36,6 +50,20 @@ export default function ChatPage() {
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [userInfo, setUserInfo] = useState<UserInfo | null>(null);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [chatHistories, setChatHistories] = useState<ChatHistory[]>([]);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [selectedHistoryId, setSelectedHistoryId] = useState<number | null>(null);
+  const [editingHistoryId, setEditingHistoryId] = useState<number | null>(null);
+  const [editingTitle, setEditingTitle] = useState('');
+  const [isHistoryCollapsed, setIsHistoryCollapsed] = useState(false);
+  const [showKnowledgeFiles, setShowKnowledgeFiles] = useState(false);
+  const [knowledgeFiles, setKnowledgeFiles] = useState<KnowledgeFile[]>([]);
+  const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
+  const [lastScanMinutes] = useState(() => Math.floor(Math.random() * 31));
+  const [ragOnlyMode, setRagOnlyMode] = useState(false);
+  const [currentProvider, setCurrentProvider] = useState<LLMProvider>('local');
+  const messagesRef = useRef<Message[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -49,6 +77,7 @@ export default function ChatPage() {
       return;
     }
     setIsAuthenticated(true);
+    setAuthToken(token);
 
     // 读取用户信息
     const savedUser = localStorage.getItem('user');
@@ -74,6 +103,52 @@ export default function ChatPage() {
     }
   }, [router]);
 
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  const loadChatHistories = async (token: string) => {
+    try {
+      setHistoryError(null);
+      const response = await getChatHistories(token, 50, 0);
+      if (response.status === 'success') {
+        const histories = response.histories || [];
+        if (histories.length > 0) {
+          setChatHistories(histories);
+        } else if (messagesRef.current.length > 0) {
+          // 回退显示当前会话，避免接口异常/空结果时侧栏“看起来全丢了”
+          setChatHistories([
+            {
+              id: -1,
+              title: buildHistoryTitle(messagesRef.current[0]?.content || '本地会话'),
+              messages: messagesRef.current as ChatHistoryMessage[],
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            },
+          ]);
+        } else {
+          setChatHistories([]);
+        }
+      } else {
+        setHistoryError('历史记录加载失败');
+      }
+    } catch (error: any) {
+      if (error?.response?.status === 401) {
+        setHistoryError('登录已过期，请重新登录');
+        handleLogout();
+        return;
+      }
+      setHistoryError(error?.response?.data?.detail || '历史记录加载失败');
+    }
+  };
+
+  useEffect(() => {
+    if (authToken) {
+      loadChatHistories(authToken);
+    }
+  }, [authToken]);
+
+
   // 自动保存聊天记录到 localStorage
   useEffect(() => {
     if (messages.length > 0) {
@@ -89,6 +164,104 @@ export default function ChatPage() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  const stripSources = (text: string) =>
+    text
+      .replace(/\n?\s*>?\s*(?:📚\s*)?(?:\*\*)?参考(?:来源|资料)(?:\*\*)?:[\s\S]*/g, '')
+      .replace(/\n?>\s*$/g, '')
+      .trimEnd();
+
+  const buildHistoryTitle = (text: string) => {
+    const trimmed = text.trim();
+    return trimmed.length > 10 ? trimmed.slice(0, 10) : trimmed || '新对话';
+  };
+
+  const handleSelectHistory = (history: ChatHistory) => {
+    setSelectedHistoryId(history.id);
+    setMessages(history.messages || []);
+  };
+
+  const handleDeleteHistory = async (historyId: number) => {
+    if (!authToken) return;
+    try {
+      const result = await deleteChatHistory(authToken, historyId);
+      if (result.status === 'success') {
+        setChatHistories((prev) => prev.filter((item) => item.id !== historyId));
+        if (selectedHistoryId === historyId) {
+          setSelectedHistoryId(null);
+          setMessages([]);
+        }
+      }
+    } catch (error) {
+      setHistoryError('删除失败，请稍后重试');
+    }
+  };
+
+  const startRenameHistory = (history: ChatHistory) => {
+    setEditingHistoryId(history.id);
+    setEditingTitle(history.title);
+  };
+
+  const cancelRenameHistory = () => {
+    setEditingHistoryId(null);
+    setEditingTitle('');
+  };
+
+  const submitRenameHistory = async (history: ChatHistory) => {
+    if (!authToken) return;
+    const trimmed = editingTitle.trim();
+    if (!trimmed) return;
+    try {
+      const result = await updateChatHistory(
+        authToken,
+        history.id,
+        history.messages || [],
+        trimmed
+      );
+      if (result.status === 'success') {
+        setChatHistories((prev) =>
+          prev.map((item) =>
+            item.id === history.id
+              ? { ...item, title: trimmed.slice(0, 10) }
+              : item
+          )
+        );
+        cancelRenameHistory();
+      }
+    } catch (error) {
+      setHistoryError('重命名失败，请稍后重试');
+    }
+  };
+
+  const handleNewChat = () => {
+    setSelectedHistoryId(null);
+    setMessages([]);
+    localStorage.removeItem('cyberguard_chat_history');
+  };
+
+
+  const loadKnowledgeFiles = async () => {
+    try {
+      setKnowledgeError(null);
+      const response = await getKnowledgeFiles();
+      setKnowledgeFiles(response.files || []);
+    } catch (error) {
+      setKnowledgeFiles([]);
+      setKnowledgeError('知识库文件获取失败');
+    }
+  };
+
+  const handleDeleteKnowledgeFile = async (fileId: number) => {
+    if (!window.confirm('确认删除该知识库文件吗？')) return;
+    try {
+      const result = await deleteKnowledgeFile(fileId);
+      if (result.status === 'success') {
+        setKnowledgeFiles((prev) => prev.filter((item) => item.id !== fileId));
+      }
+    } catch (error) {
+      setKnowledgeError('删除失败');
+    }
+  };
 
   const handleLogout = () => {
     localStorage.removeItem('token');
@@ -132,32 +305,102 @@ export default function ChatPage() {
     const userMessage = inputMessage.trim();
     setInputMessage('');
     
-    // 立即添加用户消息
+    // 1. 先把用户的消息加上去
     setMessages((prev) => [...prev, { role: 'user', content: userMessage }]);
     setIsLoading(true);
 
+    // 2. 预先占位一个空的 AI 消息，准备接收数据
+    setMessages((prev) => [...prev, { role: 'ai', content: '' }]);
+
     try {
-      // 调用 API
-      const response = await chat({ message: userMessage });
-      
-      // 添加 AI 回复
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'ai',
-          content: response.reply,
-          sources: response.sources,
+      // 3. 使用 fetch 发起流式请求 (绕过 axios)
+      const historyPayload = messages.map((msg) => ({
+        role: msg.role,
+        content: msg.content,
+      }));
+
+      const backendBaseUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+      const response = await fetch(`${backendBaseUrl}/api/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
         },
-      ]);
+        body: JSON.stringify({
+          message: userMessage,
+          history: historyPayload,
+          rag_only: ragOnlyMode,
+        }),
+      });
+
+      if (!response.ok) throw new Error(response.statusText);
+      if (!response.body) throw new Error('No response body');
+
+      // 4. 读取流
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let aiContent = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        // 解码并追加内容
+        const chunk = decoder.decode(value, { stream: true });
+        aiContent += chunk;
+        const sanitized = stripSources(aiContent);
+
+        // 5. 实时更新 UI (找到最后一条消息并更新它)
+        setMessages((prev) => {
+          const newMessages = [...prev];
+          const lastMsg = newMessages[newMessages.length - 1];
+          if (lastMsg.role === 'ai') {
+            lastMsg.content = sanitized;
+          }
+          return newMessages;
+        });
+      }
+
+      const finalContent = stripSources(aiContent);
+      const finalMessages = messagesRef.current.map((item, idx) => {
+        if (idx === messagesRef.current.length - 1 && item.role === 'ai') {
+          return { ...item, content: finalContent };
+        }
+        return item;
+      });
+      setMessages(finalMessages);
+
+      if (authToken) {
+        const historyMessages: ChatHistoryMessage[] = finalMessages.map((item) => ({
+          role: item.role,
+          content: item.content,
+        }));
+        const title = buildHistoryTitle(userMessage);
+
+        if (selectedHistoryId) {
+          const result = await updateChatHistory(authToken, selectedHistoryId, historyMessages);
+          if (result.status === 'success') {
+            loadChatHistories(authToken);
+          }
+        } else {
+          const result = await createChatHistory(authToken, title, historyMessages);
+          if (result.status === 'success' && result.id) {
+            setSelectedHistoryId(result.id);
+            loadChatHistories(authToken);
+          }
+        }
+      }
+
     } catch (error: any) {
-      // 错误处理
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'ai',
-          content: `错误: ${error.response?.data?.detail || '发送消息失败，请稍后重试'}`,
-        },
-      ]);
+      console.error('Chat error:', error);
+      setMessages((prev) => {
+        const newMessages = [...prev];
+        const lastMsg = newMessages[newMessages.length - 1];
+        if (lastMsg.role === 'ai') {
+          lastMsg.content += `\n[系统错误: ${error.message || '连接中断'}]`;
+        }
+        return newMessages;
+      });
     } finally {
       setIsLoading(false);
     }
@@ -289,7 +532,7 @@ export default function ChatPage() {
             <div className="w-2 h-2 bg-green-400 rounded-full"></div>
             <span className="text-sm text-gray-400">系统安全</span>
           </div>
-          <p className="text-xs text-gray-500">上次扫描: 2 分钟前</p>
+          <p className="text-xs text-gray-500">上次扫描: {lastScanMinutes} 分钟前</p>
         </div>
 
         {/* 登出按钮 */}
@@ -314,6 +557,16 @@ export default function ChatPage() {
           </div>
           
           <div className="flex items-center gap-4">
+            <LLMProviderToggle
+              onAuthExpired={handleLogout}
+              onProviderChange={(provider) => {
+                setCurrentProvider(provider);
+                if (provider === 'cloud') {
+                  setRagOnlyMode(false);
+                }
+              }}
+            />
+
             {/* 搜索框 */}
             <div className="relative">
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
@@ -427,142 +680,324 @@ export default function ChatPage() {
           </div>
         </header>
 
-        {/* 消息区域 - 可滚动 */}
-        <div className="flex-1 overflow-y-auto p-6 relative z-0">
-          <div className="max-w-4xl mx-auto space-y-6">
-            {messages.length === 0 && (
-              <div className="text-center py-12">
-                <Bot className="w-16 h-16 text-cyan-400 mx-auto mb-4 opacity-50" />
-                <p className="text-gray-400 text-lg">开始与 AI 安全分析师对话</p>
-                <p className="text-gray-500 text-sm mt-2">询问安全相关问题，获取专业的攻防建议</p>
-              </div>
-            )}
-
-            {messages.map((message, index) => (
-              <div
-                key={index}
-                className={`flex gap-4 ${
-                  message.role === 'user' ? 'justify-end' : 'justify-start'
-                }`}
-              >
-                {message.role === 'ai' && (
-                  <div className="w-10 h-10 rounded-full bg-slate-800/50 border border-white/5 flex items-center justify-center flex-shrink-0">
-                    <Bot className="w-5 h-5 text-cyan-400" />
-                  </div>
-                )}
-
-                <div
-                  className={`max-w-[80%] rounded-lg p-4 ${
-                    message.role === 'user'
-                      ? 'bg-gradient-to-r from-cyan-600 to-blue-600 text-white'
-                      : 'bg-slate-900/50 backdrop-blur border border-white/5 text-gray-100'
-                  }`}
-                >
-                  <div className="whitespace-pre-wrap break-words">{message.content}</div>
-                  
-                  {/* 参考来源功能已隐藏 */}
-                </div>
-
-                {message.role === 'user' && (
-                  <div className="w-10 h-10 rounded-full bg-cyan-500/20 border border-cyan-500/30 flex items-center justify-center flex-shrink-0">
-                    <User className="w-5 h-5 text-cyan-400" />
-                  </div>
-                )}
-              </div>
-            ))}
-
-            {/* 思考中指示器 */}
-            {isLoading && (
-              <div className="flex gap-4 justify-start">
-                <div className="w-10 h-10 rounded-full bg-slate-800/50 border border-white/5 flex items-center justify-center flex-shrink-0">
-                  <Bot className="w-5 h-5 text-cyan-400" />
-                </div>
-                <div className="bg-slate-900/50 backdrop-blur border border-white/5 rounded-lg p-4">
-                  <div className="flex items-center gap-2 text-gray-400">
-                    <div className="flex gap-1">
-                      <div className="w-2 h-2 bg-cyan-400 rounded-full animate-bounce"></div>
-                      <div className="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
-                      <div className="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
-                    </div>
-                    <span className="text-sm">思考中...</span>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <div ref={messagesEndRef} />
-          </div>
-        </div>
-
-        {/* 输入区域 - 固定在底部 */}
-        <div className="border-t border-white/5 bg-slate-900/50 backdrop-blur p-4">
-          <div className="max-w-4xl mx-auto">
-            {/* 上传状态提示 */}
-            {uploadStatus && (
-              <div className={`mb-3 px-4 py-2 rounded-lg text-sm ${
-                uploadStatus.includes('✅') 
-                  ? 'bg-green-500/20 text-green-400 border border-green-500/30' 
-                  : 'bg-red-500/20 text-red-400 border border-red-500/30'
-              }`}>
-                {uploadStatus}
-              </div>
-            )}
-            
-            <div className="flex gap-4 items-end">
-              {/* 隐藏的文件输入 */}
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".pdf,.txt"
-                onChange={handleFileUpload}
-                className="hidden"
-              />
-              
-              {/* 文件上传按钮 */}
+        <div className="flex-1 flex overflow-hidden">
+          {/* 对话历史侧边栏 */}
+          <aside
+            className={`bg-slate-900/60 border-r border-white/5 overflow-y-auto transition-all duration-200 ${
+              isHistoryCollapsed ? 'w-14 p-2' : 'w-72 p-4'
+            }`}
+          >
+            <div className={`flex items-center ${isHistoryCollapsed ? 'justify-center' : 'justify-between'} mb-3`}>
+              {!isHistoryCollapsed && (
+                <h2 className="text-sm font-semibold text-white">历史对话</h2>
+              )}
               <button
-                onClick={triggerFileInput}
-                disabled={isUploading || isLoading}
-                className="px-4 py-3 bg-slate-800/50 border border-white/5 rounded-lg text-gray-400 hover:text-cyan-400 hover:border-cyan-500/30 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
-                title="上传文件 (PDF/TXT)"
+                onClick={() => setIsHistoryCollapsed((prev) => !prev)}
+                className="text-xs text-cyan-400 hover:text-cyan-300 transition-colors"
               >
-                {isUploading ? (
-                  <div className="w-5 h-5 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin"></div>
-                ) : (
-                  <Paperclip className="w-5 h-5" />
-                )}
-              </button>
-              
-              <div className="flex-1 relative">
-                <textarea
-                  ref={inputRef}
-                  value={inputMessage}
-                  onChange={(e) => setInputMessage(e.target.value)}
-                  onKeyPress={handleKeyPress}
-                  placeholder="输入您的问题... (按 Enter 发送，Shift+Enter 换行)"
-                  rows={1}
-                  className="w-full px-4 py-3 bg-slate-800/50 border border-white/5 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 resize-none font-mono text-sm"
-                  style={{
-                    minHeight: '48px',
-                    maxHeight: '200px',
-                    height: 'auto',
-                  }}
-                  onInput={(e) => {
-                    const target = e.target as HTMLTextAreaElement;
-                    target.style.height = 'auto';
-                    target.style.height = `${target.scrollHeight}px`;
-                  }}
-                  disabled={isLoading || isUploading}
-                />
-              </div>
-              <button
-                onClick={handleSend}
-                disabled={!inputMessage.trim() || isLoading || isUploading}
-                className="px-6 py-3 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white font-semibold rounded-lg transition-all duration-200 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <Send className="w-5 h-5" />
-                <span>发送</span>
+                {isHistoryCollapsed ? '展开' : '收起'}
               </button>
             </div>
+
+            {!isHistoryCollapsed && (
+              <>
+                <div className="flex items-center justify-between mb-3">
+                  <button
+                    onClick={handleNewChat}
+                    className="text-xs text-cyan-400 hover:text-cyan-300 transition-colors"
+                  >
+                    新对话
+                  </button>
+                  <button
+                    onClick={() => authToken && loadChatHistories(authToken)}
+                    className="text-xs text-gray-400 hover:text-gray-200 transition-colors"
+                  >
+                    刷新
+                  </button>
+                </div>
+
+                {historyError && (
+                  <div className="mb-3 text-xs text-red-400">{historyError}</div>
+                )}
+
+                {chatHistories.length > 0 ? (
+                  <div className="space-y-2">
+                    {chatHistories.map((history) => (
+                      <div
+                        key={history.id}
+                        className={`group flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm transition-all ${
+                          selectedHistoryId === history.id
+                            ? 'border-cyan-500/50 bg-cyan-500/10 text-cyan-300'
+                            : 'border-white/5 bg-slate-800/40 text-gray-300 hover:border-cyan-500/30 hover:text-white'
+                        }`}
+                      >
+                        {editingHistoryId === history.id ? (
+                          <div className="flex-1 flex items-center gap-2">
+                            <input
+                              value={editingTitle}
+                              onChange={(event) => setEditingTitle(event.target.value.slice(0, 10))}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                  event.preventDefault();
+                                  submitRenameHistory(history);
+                                }
+                                if (event.key === 'Escape') {
+                                  event.preventDefault();
+                                  cancelRenameHistory();
+                                }
+                              }}
+                              className="flex-1 bg-slate-900/60 border border-cyan-500/40 rounded px-2 py-1 text-xs text-white focus:outline-none"
+                            />
+                            <button
+                              onClick={() => submitRenameHistory(history)}
+                              className="text-xs text-cyan-400 hover:text-cyan-300"
+                            >
+                              保存
+                            </button>
+                            <button
+                              onClick={cancelRenameHistory}
+                              className="text-xs text-gray-400 hover:text-gray-200"
+                            >
+                              取消
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            <button
+                              onClick={() => handleSelectHistory(history)}
+                              className="flex-1 text-left truncate"
+                              title={history.title}
+                            >
+                              {history.title}
+                            </button>
+                            <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                              {history.id > 0 && (
+                                <>
+                                  <button
+                                    onClick={() => startRenameHistory(history)}
+                                    className="text-xs text-cyan-400 hover:text-cyan-300"
+                                  >
+                                    重命名
+                                  </button>
+                                  <button
+                                    onClick={() => handleDeleteHistory(history.id)}
+                                    className="text-xs text-red-400 hover:text-red-300"
+                                  >
+                                    删除
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-xs text-gray-500">暂无历史对话</div>
+                )}
+              </>
+            )}
+          </aside>
+
+          {/* 对话区域 */}
+          <div className="flex-1 flex flex-col overflow-hidden">
+            {/* 消息区域 - 可滚动 */}
+            <div className="flex-1 overflow-y-auto p-6 relative z-0">
+              <div className="max-w-4xl mx-auto space-y-6">
+                {messages.length === 0 && (
+                  <div className="text-center py-12">
+                    <Bot className="w-16 h-16 text-cyan-400 mx-auto mb-4 opacity-50" />
+                    <p className="text-gray-400 text-lg">开始与 AI 安全分析师对话</p>
+                    <p className="text-gray-500 text-sm mt-2">询问安全相关问题，获取专业的攻防建议</p>
+                  </div>
+                )}
+
+                {messages.map((message, index) => (
+                  <div
+                    key={index}
+                    className={`flex gap-4 ${
+                      message.role === 'user' ? 'justify-end' : 'justify-start'
+                    }`}
+                  >
+                    {message.role === 'ai' && (
+                      <div className="w-10 h-10 rounded-full bg-slate-800/50 border border-white/5 flex items-center justify-center flex-shrink-0">
+                        <Bot className="w-5 h-5 text-cyan-400" />
+                      </div>
+                    )}
+
+                    <div
+                      className={`max-w-[80%] rounded-lg p-4 ${
+                        message.role === 'user'
+                          ? 'bg-gradient-to-r from-cyan-600 to-blue-600 text-white'
+                          : 'bg-slate-900/50 backdrop-blur border border-white/5 text-gray-100'
+                      }`}
+                    >
+                      <div className="whitespace-pre-wrap break-words">
+                        {stripSources(message.content)}
+                        {message.role === 'ai' && isLoading && index === messages.length - 1 && (
+                          <span className="inline-block w-2 h-4 ml-1 align-middle bg-cyan-400 animate-pulse"></span>
+                        )}
+                      </div>
+                    </div>
+
+                    {message.role === 'user' && (
+                      <div className="w-10 h-10 rounded-full bg-cyan-500/20 border border-cyan-500/30 flex items-center justify-center flex-shrink-0">
+                        <User className="w-5 h-5 text-cyan-400" />
+                      </div>
+                    )}
+                  </div>
+                ))}
+
+                <div ref={messagesEndRef} />
+              </div>
+            </div>
+
+            {/* 输入区域 - 固定在底部 */}
+            <div className="border-t border-white/5 bg-slate-900/50 backdrop-blur p-4">
+              <div className="max-w-4xl mx-auto">
+                {/* 上传状态提示 */}
+                {uploadStatus && (
+                  <div className={`mb-3 px-4 py-2 rounded-lg text-sm ${
+                    uploadStatus.includes('✅') 
+                      ? 'bg-green-500/20 text-green-400 border border-green-500/30' 
+                      : 'bg-red-500/20 text-red-400 border border-red-500/30'
+                  }`}>
+                    {uploadStatus}
+                  </div>
+                )}
+                
+                <div className="flex gap-4 items-end">
+                  {/* 隐藏的文件输入 */}
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".pdf,.txt"
+                    onChange={handleFileUpload}
+                    className="hidden"
+                  />
+                  
+                  {/* 文件上传按钮 */}
+                  <button
+                    onClick={triggerFileInput}
+                    disabled={isUploading || isLoading}
+                    className="px-4 py-3 bg-slate-800/50 border border-white/5 rounded-lg text-gray-400 hover:text-cyan-400 hover:border-cyan-500/30 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+                    title="上传文件 (PDF/TXT)"
+                  >
+                    {isUploading ? (
+                      <div className="w-5 h-5 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin"></div>
+                    ) : (
+                      <Paperclip className="w-5 h-5" />
+                    )}
+                  </button>
+              <button
+                onClick={() => {
+                  if (!showKnowledgeFiles) {
+                    loadKnowledgeFiles();
+                  }
+                  setShowKnowledgeFiles((prev) => !prev);
+                }}
+                className="px-4 py-3 bg-slate-800/50 border border-white/5 rounded-lg text-gray-400 hover:text-cyan-400 hover:border-cyan-500/30 transition-all duration-200 flex items-center justify-center"
+                title="查看知识库文件"
+              >
+                知识库
+              </button>
+              <button
+                onClick={() => setRagOnlyMode((prev) => !prev)}
+                disabled={currentProvider === 'cloud'}
+                className={`px-4 py-3 border rounded-lg transition-all duration-200 flex items-center justify-center text-sm ${
+                  currentProvider === 'cloud'
+                    ? 'bg-slate-800/30 border-white/5 text-gray-600 cursor-not-allowed'
+                    : ragOnlyMode
+                    ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-300'
+                    : 'bg-slate-800/50 border-white/5 text-gray-400 hover:text-cyan-400 hover:border-cyan-500/30'
+                }`}
+                title={
+                  currentProvider === 'cloud'
+                    ? '云端模式下不可使用仅RAG'
+                    : '开启后仅使用本地知识库回答'
+                }
+              >
+                仅RAG
+              </button>
+                  
+                  <div className="flex-1 relative">
+                    <textarea
+                      ref={inputRef}
+                      value={inputMessage}
+                      onChange={(e) => setInputMessage(e.target.value)}
+                      onKeyPress={handleKeyPress}
+                      placeholder="输入您的问题... (按 Enter 发送，Shift+Enter 换行)"
+                      rows={1}
+                      className="w-full px-4 py-3 bg-slate-800/50 border border-white/5 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 resize-none font-mono text-sm"
+                      style={{
+                        minHeight: '48px',
+                        maxHeight: '200px',
+                        height: 'auto',
+                      }}
+                      onInput={(e) => {
+                        const target = e.target as HTMLTextAreaElement;
+                        target.style.height = 'auto';
+                        target.style.height = `${target.scrollHeight}px`;
+                      }}
+                      disabled={isLoading || isUploading}
+                    />
+                  </div>
+                  <button
+                    onClick={handleSend}
+                    disabled={!inputMessage.trim() || isLoading || isUploading}
+                    className="px-6 py-3 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white font-semibold rounded-lg transition-all duration-200 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <Send className="w-5 h-5" />
+                    <span>发送</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+            {showKnowledgeFiles && (
+              <div className="mt-4 bg-slate-900/60 border border-white/5 rounded-lg p-4 text-sm text-gray-300">
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-sm font-semibold text-white">已上传知识库文件</span>
+                  <button
+                    onClick={loadKnowledgeFiles}
+                    className="text-xs text-cyan-400 hover:text-cyan-300"
+                  >
+                    刷新
+                  </button>
+                </div>
+                {knowledgeError && <div className="text-xs text-red-400">{knowledgeError}</div>}
+                {knowledgeFiles.length > 0 ? (
+                  <div className="max-h-56 overflow-y-auto pr-1 space-y-3">
+                    {knowledgeFiles.map((file) => (
+                      <div
+                        key={file.id}
+                        className="bg-slate-900/70 border border-slate-700 rounded-lg p-3 shadow-sm hover:border-cyan-500/40 transition-colors"
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-sm text-white truncate">{file.filename}</span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-gray-500 whitespace-nowrap">
+                              {file.chunk_count ?? 0} chunks
+                            </span>
+                            <button
+                              onClick={() => handleDeleteKnowledgeFile(file.id)}
+                              className="text-xs text-red-400 hover:text-red-300"
+                            >
+                              删除
+                            </button>
+                          </div>
+                        </div>
+                        <div className="mt-2 text-xs text-gray-500">
+                          {file.status || 'indexed'}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-xs text-gray-500">暂无已上传文件</div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </main>

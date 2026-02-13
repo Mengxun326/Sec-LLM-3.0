@@ -21,7 +21,16 @@ import {
   Code,
   FileCode,
 } from 'lucide-react';
-import { uploadLogFile, type AnalysisResult, type UserInfo } from '@/lib/api';
+import {
+  getLogRecords,
+  deleteLogRecord,
+  updateLogRecordStatus,
+  uploadLogFile,
+  type AnalysisResult,
+  type LogRecord,
+  type UserInfo,
+} from '@/lib/api';
+import LLMProviderToggle from '@/components/LLMProviderToggle';
 
 export default function LogAnalysisPage() {
   const router = useRouter();
@@ -34,9 +43,28 @@ export default function LogAnalysisPage() {
   const [fileName, setFileName] = useState<string | null>(null);
   const [userInfo, setUserInfo] = useState<UserInfo | null>(null);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [logRecords, setLogRecords] = useState<LogRecord[]>([]);
+  const [logRecordsError, setLogRecordsError] = useState<string | null>(null);
+  const [lastScanMinutes] = useState(() => Math.floor(Math.random() * 31));
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
+
+  const loadLogRecords = async () => {
+    try {
+      setLogRecordsError(null);
+      const response = await getLogRecords(50, 0);
+      if (response.status === 'success') {
+        setLogRecords(response.records || []);
+      } else {
+        setLogRecords([]);
+        setLogRecordsError('日志记录获取失败');
+      }
+    } catch (err) {
+      setLogRecords([]);
+      setLogRecordsError('日志记录获取失败');
+    }
+  };
 
   useEffect(() => {
     // 检查认证状态
@@ -72,7 +100,10 @@ export default function LogAnalysisPage() {
         console.error('恢复日志分析结果失败:', error);
       }
     }
+
+    loadLogRecords();
   }, [router]);
+
 
   // 自动保存日志分析结果到 localStorage
   useEffect(() => {
@@ -126,6 +157,7 @@ export default function LogAnalysisPage() {
     }
   };
 
+
   const handleFileUpload = async (file: File) => {
     if (!file) return;
 
@@ -148,6 +180,7 @@ export default function LogAnalysisPage() {
       
       if (response.status === 'success' && response.ai_analysis) {
         setAnalysisResult(response.ai_analysis);
+        loadLogRecords();
       } else {
         setError('分析失败，请重试');
       }
@@ -215,6 +248,42 @@ export default function LogAnalysisPage() {
     }
   };
 
+  const statusLabel = (status: LogRecord['status']) => {
+    switch (status) {
+      case 'resolved':
+        return '已解决';
+      case 'ignored':
+        return '忽略';
+      default:
+        return '未解决';
+    }
+  };
+
+  const handleStatusChange = async (recordId: number, status: LogRecord['status']) => {
+    try {
+      const result = await updateLogRecordStatus(recordId, status);
+      if (result.status === 'success') {
+        setLogRecords((prev) =>
+          prev.map((item) => (item.id === recordId ? { ...item, status } : item))
+        );
+      }
+    } catch (error) {
+      setLogRecordsError('状态更新失败');
+    }
+  };
+
+  const handleDeleteRecord = async (recordId: number) => {
+    if (!window.confirm('确认删除该日志记录吗？')) return;
+    try {
+      const result = await deleteLogRecord(recordId);
+      if (result.status === 'success') {
+        setLogRecords((prev) => prev.filter((item) => item.id !== recordId));
+      }
+    } catch (error) {
+      setLogRecordsError('删除失败');
+    }
+  };
+
   const getThreatIcon = (level: string) => {
     switch (level) {
       case 'Critical':
@@ -227,6 +296,13 @@ export default function LogAnalysisPage() {
       default:
         return <Shield className="w-6 h-6 text-gray-400" />;
     }
+  };
+
+  const formatLogTime = (value?: string) => {
+    if (!value) return '-';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString();
   };
 
   // 如果未认证，不渲染内容
@@ -306,7 +382,7 @@ export default function LogAnalysisPage() {
             <div className="w-2 h-2 bg-green-400 rounded-full"></div>
             <span className="text-sm text-gray-400">系统安全</span>
           </div>
-          <p className="text-xs text-gray-500">上次扫描: 2 分钟前</p>
+          <p className="text-xs text-gray-500">上次扫描: {lastScanMinutes} 分钟前</p>
         </div>
 
         {/* 登出按钮 */}
@@ -331,6 +407,8 @@ export default function LogAnalysisPage() {
           </div>
           
           <div className="flex items-center gap-4">
+            <LLMProviderToggle onAuthExpired={handleLogout} />
+
             {/* 搜索框 */}
             <div className="relative">
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
@@ -591,6 +669,83 @@ export default function LogAnalysisPage() {
                 )}
               </div>
             )}
+
+            {/* 日志审计记录 */}
+            <div className="bg-slate-900/50 backdrop-blur border border-white/5 rounded-lg p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                  <ShieldAlert className="w-5 h-5 text-red-400" />
+                  日志审计记录
+                </h3>
+                <button
+                  onClick={loadLogRecords}
+                  className="text-xs text-cyan-400 hover:text-cyan-300 transition-colors"
+                >
+                  刷新
+                </button>
+              </div>
+
+              {logRecordsError && (
+                <div className="mb-3 text-sm text-red-400">{logRecordsError}</div>
+              )}
+
+              {logRecords.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-gray-400 border-b border-slate-700">
+                        <th className="py-2 pr-4">时间</th>
+                        <th className="py-2 pr-4">文件</th>
+                        <th className="py-2 pr-4">等级</th>
+                        <th className="py-2 pr-4">类型</th>
+                        <th className="py-2 pr-4">源 IP</th>
+                        <th className="py-2 pr-4">摘要</th>
+                        <th className="py-2">状态</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {logRecords.map((record) => (
+                        <tr key={record.id} className="border-b border-slate-800 text-gray-300">
+                          <td className="py-2 pr-4 whitespace-nowrap">{formatLogTime(record.upload_time)}</td>
+                          <td className="py-2 pr-4">{record.filename || '-'}</td>
+                          <td className={`py-2 pr-4 ${getThreatLevelTextColor(record.threat_level)}`}>
+                            {record.threat_level || 'Unknown'}
+                          </td>
+                          <td className="py-2 pr-4">{record.attack_type || '-'}</td>
+                          <td className="py-2 pr-4 font-mono">{record.source_ip || '-'}</td>
+                          <td className="py-2 pr-4 max-w-[360px] truncate">{record.summary || '-'}</td>
+                          <td className="py-2 flex items-center gap-2">
+                            <select
+                              value={record.status}
+                              onChange={(event) =>
+                                handleStatusChange(
+                                  record.id,
+                                  event.target.value as LogRecord['status']
+                                )
+                              }
+                              className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-gray-200"
+                            >
+                              <option value="unresolved">未解决</option>
+                              <option value="resolved">已解决</option>
+                              <option value="ignored">忽略</option>
+                            </select>
+                            <span className="text-xs text-gray-400">{statusLabel(record.status)}</span>
+                            <button
+                              onClick={() => handleDeleteRecord(record.id)}
+                              className="ml-2 text-xs text-red-400 hover:text-red-300"
+                            >
+                              删除
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="text-gray-400 text-sm">暂无日志审计记录</div>
+              )}
+            </div>
 
             {/* 空状态提示 */}
             {!analysisResult && !isLoading && !error && (

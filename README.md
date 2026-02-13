@@ -19,28 +19,42 @@
   <a href="#-功能特性">功能特性</a>
 </p>
 
-一个基于本地 LLM（Ollama）和云端 API（DeepSeek）的**网络安全专用**智能分析平台。集成了 RAG（检索增强生成）技术，提供日志分析、AI 对话、威胁检测和安全报告生成等功能。
+一个面向网络安全场景的本地/云端 LLM 平台，集成 RAG 知识库、日志分析、流式对话与仪表盘统计，支持本地 Ollama 与 DeepSeek 云端模型切换。
 
-> 🔐 **Sec-LLM** - 由灵犀网卫开发的网络安全专门用途大模型
+> 🔐 **Sec-LLM** - 由灵犀网卫开发的网络安全专用大模型
 
 ---
 
 ## ✨ 功能特性
 
-- 🤖 **专业安全 AI**：严格限定网络安全领域，拒绝回答非安全话题
-- 📚 **知识库学习**：上传 PDF/TXT 文档，AI 自动学习并用于问答
-- 🔍 **智能日志分析**：自动识别威胁类型、提取 Payload、分析攻击源
-- 📊 **实时仪表盘**：动态数据展示、威胁状态监控、系统健康检查
-- 📄 **报告生成**：一键导出 PDF/Markdown 安全审计报告
-- 🔐 **用户认证**：JWT 令牌认证 + SQLite 数据库 + bcrypt 密码加密
+- 🤖 **安全领域专用**：严格限制非安全话题，中文优先回答
+- 🔁 **引擎实时切换**：网页一键切换本地 Ollama / 云端 DeepSeek（用户级独立选择）
+- 📚 **知识库学习**：PDF/TXT 上传入库，检索增强问答
+- 🔍 **智能日志分析**：威胁等级、攻击类型、源 IP 自动提取
+- 📊 **真实仪表盘**：基于 MySQL 统计日志与风险指标
+- 🧪 **流式对话**：后端流式输出，前端打字机效果
+- 🔐 **用户认证**：JWT 认证 + bcrypt 密码加密 + 邮箱验证激活
+- 👤 **用户数据隔离**：日志记录、知识库文件、统计数据按用户隔离
+- 🧹 **临时文件清理**：`temp/` 目录定期清理（默认 24h）
+
+---
+
+## 🆕 本次升级重点
+
+- **引擎切换现代化**：无需改 `.env` / 重启后端，支持前端 Toggle 实时切换
+- **用户级引擎偏好**：每个用户独立保存 `llm_provider`，互不影响
+- **聊天与日志分析统一引擎**：`/api/chat` 与日志分析接口都按当前用户引擎执行
+- **DeepSeek 云端流式接入**：兼容 OpenAI Chat Completions 流式协议
+- **反提示注入增强**：聊天提示词新增 `ANTI-JAILBREAK (CRITICAL)` 规则
+- **邮箱验证闭环**：注册发验证邮件、链接激活、登录拦截未激活账号、支持重发验证
+- **前端组件抽象**：`LLMProviderToggle` 共用组件统一接入首页/聊天/日志分析
 
 ---
 
 ## 🛠 技术栈
 
-**后端**: Python 3.10+ | FastAPI | SQLAlchemy | LangChain | ChromaDB | Ollama | DeepSeek API
-
-**前端**: Next.js 14 | React 18 | TypeScript | Tailwind CSS | Recharts
+**后端**: Python 3.10+ | FastAPI | PyMySQL | LangChain | Chroma | Ollama | DeepSeek API  
+**前端**: Next.js 14 | React 18 | TypeScript | Tailwind CSS
 
 ---
 
@@ -48,13 +62,14 @@
 
 - Python 3.10+
 - Node.js 18+
-- Ollama（需安装 `deepseek-r1:1.5b` 和 `nomic-embed-text` 模型）
-- DeepSeek API Key
+- MySQL 8.x
+- Ollama（本地模型：`llama3:8b` + `nomic-embed-text`）
+- DeepSeek API Key（可选，启用云端时需要）
 
 ### 安装 Ollama 模型
 
 ```bash
-ollama pull deepseek-r1:1.5b
+ollama pull llama3:8b
 ollama pull nomic-embed-text
 ```
 
@@ -79,9 +94,6 @@ python -m venv venv
 
 pip install -r requirements.txt
 
-# 配置 DeepSeek API Key（编辑 main.py）
-# API_KEY = "your-deepseek-api-key-here"
-
 python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -95,9 +107,47 @@ npm run dev
 
 ### 4. 访问应用
 
-打开浏览器访问 `http://localhost:3000`
-
+浏览器访问 `http://localhost:3000`  
 默认管理员账户：`admin` / `admin123`
+
+---
+
+## ⚙️ 配置说明（backend/.env）
+
+关键字段：
+
+- `LLM_PROVIDER=local|cloud`（默认值，仅首次/兜底；运行时可前端切换）
+- `OLLAMA_BASE_URL` / `OLLAMA_MODEL_NAME`
+- `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` / `DEEPSEEK_MODEL_NAME`
+- `DATABASE_TYPE=mysql`
+- `MYSQL_USER` / `MYSQL_PASSWORD` / `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_DB`
+- `MAIL_USERNAME` / `MAIL_PASSWORD` / `MAIL_FROM` / `MAIL_PORT` / `MAIL_SERVER`
+- `MAIL_FROM_NAME` / `DOMAIN_URL`
+
+> 注意：`DEEPSEEK_API_KEY` 必须为真实可用密钥；否则云端对话会返回 401/400。
+
+---
+
+## ✅ 数据库连接验证
+
+### 方式一：看启动日志
+
+后端启动时会打印类似：
+```
+[DB] Using MySQL Database: host:port/db
+```
+若连接失败会直接抛出异常。
+
+### 方式二：接口验证
+
+访问 `http://localhost:8000/api/dashboard/stats`，如果返回非全 0 的统计数据，说明数据库连接正常且可查询。
+
+### 方式三：命令行快速测试
+
+在 `backend` 目录执行：
+```powershell
+.\venv\Scripts\python.exe -c "import os;from dotenv import load_dotenv;import pymysql;load_dotenv(r'H:\sec-llm-local\backend\.env');conn=pymysql.connect(host=os.getenv('MYSQL_HOST'),user=os.getenv('MYSQL_USER'),password=os.getenv('MYSQL_PASSWORD'),port=int(os.getenv('MYSQL_PORT')),database=os.getenv('MYSQL_DB'));cur=conn.cursor();cur.execute('SELECT 1');print(cur.fetchone());conn.close()"
+```
 
 ---
 
@@ -109,40 +159,25 @@ npm run dev
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
-| POST | `/api/register` | 用户注册 |
+| POST | `/api/register` | 用户注册（发送验证邮件） |
+| GET | `/api/verify` | 邮箱验证激活 |
+| POST | `/api/resend-verification` | 重发验证邮件 |
 | POST | `/api/login` | 用户登录 |
-| GET | `/api/me` | 获取当前用户信息 |
-| GET | `/api/dashboard/stats` | 仪表盘统计数据 |
+| GET | `/api/me` | 获取当前用户 |
+| GET | `/api/llm/provider` | 获取当前用户引擎偏好 |
+| PUT | `/api/llm/provider` | 更新当前用户引擎偏好 |
+| GET | `/api/dashboard/stats` | 仪表盘统计 |
 | POST | `/api/upload` | 文件上传（RAG/日志分析） |
-| POST | `/api/chat` | AI 对话 |
-
----
-
-## ❓ 常见问题
-
-### Ollama 连接失败
-
-```bash
-# 检查 Ollama 服务状态
-ollama list
-
-# 启动 Ollama 服务
-ollama serve
-```
-
-### 端口被占用
-
-```bash
-# Windows
-netstat -ano | findstr :8000
-taskkill /PID <进程ID> /F
-```
-
-### DeepSeek API 调用失败
-
-- 检查 API Key 是否正确
-- 确认 API 余额充足
-- 检查网络连接
+| POST | `/api/chat` | 流式 AI 对话 |
+| GET | `/api/log-records` | 获取日志审计记录（当前用户） |
+| PUT | `/api/log-records/{id}/status` | 更新日志状态（当前用户） |
+| DELETE | `/api/log-records/{id}` | 删除日志记录（当前用户） |
+| GET | `/api/chat-histories` | 获取对话历史（当前用户） |
+| POST | `/api/chat-histories` | 新建对话历史 |
+| PUT | `/api/chat-histories/{id}` | 更新对话历史 |
+| DELETE | `/api/chat-histories/{id}` | 删除对话历史 |
+| GET | `/api/knowledge/files` | 获取知识库文件列表（当前用户） |
+| DELETE | `/api/knowledge/files/{id}` | 删除知识库文件（当前用户） |
 
 ---
 
@@ -163,9 +198,9 @@ sec-llm-local/
 
 ## ⚠️ 安全提示
 
-- 生产环境请修改 JWT SECRET_KEY 和默认管理员密码
+- 生产环境请修改 `JWT_SECRET_KEY` 与默认管理员密码
 - 不要将 API Key 提交到代码仓库
-- 使用环境变量管理敏感配置
+- 建议使用专用 MySQL 账号并限制权限
 
 ---
 

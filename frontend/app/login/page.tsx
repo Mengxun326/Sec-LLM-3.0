@@ -2,8 +2,8 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { User, Lock, Eye, EyeOff, ArrowRight, Shield } from 'lucide-react';
-import { login } from '@/lib/api';
+import { User, Lock, Eye, EyeOff, ArrowRight, Shield, Mail } from 'lucide-react';
+import { login, resendVerification } from '@/lib/api';
 import Image from 'next/image';
 
 export default function LoginPage() {
@@ -13,6 +13,11 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+  const [showResendBox, setShowResendBox] = useState(false);
+  const [verifyEmail, setVerifyEmail] = useState('');
+  const [resendLoading, setResendLoading] = useState(false);
+  const [resendMessage, setResendMessage] = useState('');
+  const [resendError, setResendError] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -36,9 +41,27 @@ export default function LoginPage() {
       // Redirect to dashboard
       router.push('/');
     } catch (err: any) {
-      setError(err.response?.data?.detail || '登录失败，请检查用户名和密码');
+      const detail = err.response?.data?.detail || '登录失败，请检查用户名和密码';
+      setError(detail);
+      if (typeof detail === 'string' && detail.includes('账户未激活')) {
+        setShowResendBox(true);
+      }
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleResendVerification = async () => {
+    setResendError('');
+    setResendMessage('');
+    setResendLoading(true);
+    try {
+      const res = await resendVerification(verifyEmail);
+      setResendMessage(res.message || '验证邮件已发送，请查收。');
+    } catch (err: any) {
+      setResendError(err.response?.data?.detail || '发送失败，请稍后重试');
+    } finally {
+      setResendLoading(false);
     }
   };
 
@@ -144,6 +167,50 @@ export default function LoginPage() {
                 <div className="text-red-400 text-sm text-center">{error}</div>
               )}
 
+              {/* Resend Verification Entry */}
+              <div className="text-sm">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowResendBox(!showResendBox);
+                    setResendError('');
+                    setResendMessage('');
+                  }}
+                  className="text-cyan-400 hover:text-cyan-300 transition-colors"
+                >
+                  收不到邮件或账号未激活？重发验证邮件
+                </button>
+
+                {showResendBox && (
+                  <div className="mt-3 rounded-lg border border-slate-700 bg-slate-800/60 p-3">
+                    <label htmlFor="verifyEmail" className="block text-gray-300 mb-2">
+                      注册邮箱
+                    </label>
+                    <div className="relative">
+                      <Mail className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+                      <input
+                        id="verifyEmail"
+                        type="email"
+                        value={verifyEmail}
+                        onChange={(e) => setVerifyEmail(e.target.value)}
+                        placeholder="请输入注册时使用的邮箱"
+                        className="w-full pl-9 pr-3 py-2 bg-slate-900 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
+                      />
+                    </div>
+                    {resendError && <p className="text-red-400 mt-2">{resendError}</p>}
+                    {resendMessage && <p className="text-emerald-400 mt-2">{resendMessage}</p>}
+                    <button
+                      type="button"
+                      onClick={handleResendVerification}
+                      disabled={resendLoading || !verifyEmail}
+                      className="mt-3 w-full py-2 px-3 bg-slate-700 hover:bg-slate-600 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {resendLoading ? '发送中...' : '发送验证邮件'}
+                    </button>
+                  </div>
+                )}
+              </div>
+
               {/* Login Button */}
               <button
                 type="submit"
@@ -167,12 +234,9 @@ export default function LoginPage() {
               </button>
 
               {/* Additional Links */}
-              <div className="flex justify-between text-sm">
+              <div className="flex text-sm">
                 <a href="#" className="text-gray-400 hover:text-cyan-400 transition-colors">
                   忘记密码？
-                </a>
-                <a href="#" className="text-gray-400 hover:text-cyan-400 transition-colors">
-                  单点登录
                 </a>
               </div>
 

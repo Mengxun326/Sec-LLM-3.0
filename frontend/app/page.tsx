@@ -30,7 +30,8 @@ import {
   Zap,
   ArrowRight,
 } from 'lucide-react';
-import { type AnalysisResult, type UserInfo } from '@/lib/api';
+import { getDashboardStats, getLogRecords, type AnalysisResult, type LogRecord, type UserInfo } from '@/lib/api';
+import LLMProviderToggle from '@/components/LLMProviderToggle';
 import {
   AreaChart,
   Area,
@@ -201,6 +202,20 @@ const getActivityIcon = (type: RecentActivity['type']) => {
   }
 };
 
+const getThreatLevelTextColor = (level: string) => {
+  switch (level) {
+    case 'Critical':
+    case 'High':
+      return 'text-red-400';
+    case 'Medium':
+      return 'text-yellow-400';
+    case 'Low':
+      return 'text-green-400';
+    default:
+      return 'text-gray-400';
+  }
+};
+
 interface LogAnalysisData {
   analysisResult: AnalysisResult;
   fileName: string;
@@ -231,8 +246,13 @@ export default function Dashboard() {
   const [chatHistory, setChatHistory] = useState<Message[]>([]);
   const [currentTime, setCurrentTime] = useState(new Date());
   const [auditCount, setAuditCount] = useState(0);
+  const [aiInteractionCount, setAiInteractionCount] = useState(0);
   const [dashboardStats, setDashboardStats] = useState<DashboardStats>(generateRandomStats());
   const [threatTrafficData, setThreatTrafficData] = useState(generateThreatTrafficData());
+  const [logRecords, setLogRecords] = useState<LogRecord[]>([]);
+  const [logRecordsError, setLogRecordsError] = useState<string | null>(null);
+  const [hasHighUnresolved, setHasHighUnresolved] = useState(false);
+  const [lastScanMinutes] = useState(() => Math.floor(Math.random() * 31));
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchItem[]>([]);
   const [showSearchResults, setShowSearchResults] = useState(false);
@@ -245,6 +265,47 @@ export default function Dashboard() {
   const [animatedStorage, setAnimatedStorage] = useState(0);
   const searchContainerRef = useRef<HTMLDivElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
+
+  const loadLogRecords = async () => {
+    try {
+      setLogRecordsError(null);
+      const response = await getLogRecords(50, 0);
+      if (response.status === 'success') {
+        const records = response.records || [];
+        setLogRecords(records);
+        setAuditCount(records.length);
+      } else {
+        setLogRecords([]);
+        setAuditCount(0);
+        setLogRecordsError('日志记录获取失败');
+      }
+    } catch (error) {
+      setLogRecords([]);
+      setAuditCount(0);
+      setLogRecordsError('日志记录获取失败');
+    }
+  };
+
+  const loadDashboardStats = async () => {
+    try {
+      const stats = await getDashboardStats();
+      setDashboardStats((prev) => ({
+        ...prev,
+        totalThreats: { value: stats.total_events || 0, trend: 0 },
+      }));
+      if (typeof stats.total_events === 'number') {
+        setAuditCount(stats.total_events);
+      }
+      if (typeof stats.ai_interactions === 'number') {
+        setAiInteractionCount(stats.ai_interactions);
+      }
+      if (typeof stats.high_unresolved_count === 'number') {
+        setHasHighUnresolved(stats.high_unresolved_count > 0);
+      }
+    } catch (error) {
+      // 保留现有随机展示作为回退
+    }
+  };
 
   useEffect(() => {
     // 检查认证状态
@@ -266,7 +327,7 @@ export default function Dashboard() {
       }
     }
     
-    // 每次页面加载时生成新的随机统计数据
+    // 初始化展示（先本地占位，再拉真实数据）
     setDashboardStats(generateRandomStats());
     setThreatTrafficData(generateThreatTrafficData());
 
@@ -293,17 +354,12 @@ export default function Dashboard() {
         }
       }
 
-      // 计算日志审计次数（检查是否有审计记录）
-      // 如果有日志分析数据，说明至少进行过1次审计
-      if (logData) {
-        setAuditCount(1);
-      } else {
-        // 也可以检查是否有历史审计记录（如果将来需要）
-        setAuditCount(0);
-      }
     } catch (error) {
       console.error('读取数据失败:', error);
     }
+
+    loadLogRecords();
+    loadDashboardStats();
   }, [router]);
 
   // 更新时间
@@ -357,13 +413,19 @@ export default function Dashboard() {
   }, []);
 
   // 获取威胁等级
-  const threatLevel = logAnalysis?.analysisResult?.threat_level || 'Low';
-  const isUnderAttack = threatLevel === 'High' || threatLevel === 'Critical';
+  const isUnderAttack = hasHighUnresolved;
+  const threatLevelText = hasHighUnresolved ? 'High' : 'Low';
 
   // 计算统计数据
   const threatCount = logAnalysis?.analysisResult?.details?.length || 0;
-  const aiInteractionCount = chatHistory.length;
   // auditCount 已在 useEffect 中设置
+
+  const formatLogTime = (value?: string) => {
+    if (!value) return '-';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString();
+  };
 
   const handleLogout = () => {
     localStorage.removeItem('token');
@@ -711,7 +773,7 @@ export default function Dashboard() {
             <div className="w-2 h-2 bg-green-400 rounded-full"></div>
             <span className="text-sm text-gray-400">系统安全</span>
           </div>
-          <p className="text-xs text-gray-500">上次扫描: 2 分钟前</p>
+          <p className="text-xs text-gray-500">上次扫描: {lastScanMinutes} 分钟前</p>
         </div>
 
         {/* 登出按钮 */}
@@ -733,6 +795,7 @@ export default function Dashboard() {
           <h1 className="text-xl font-bold text-white">仪表盘</h1>
           
           <div className="flex items-center gap-4">
+            <LLMProviderToggle onAuthExpired={handleLogout} />
             {/* 搜索框 */}
             <div className="relative search-container" ref={searchContainerRef}>
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 z-10" />
@@ -1185,7 +1248,7 @@ export default function Dashboard() {
                   </div>
                   <p className="text-sm text-gray-400">
                     {isUnderAttack
-                      ? `威胁等级: ${threatLevel} | 建议立即采取行动`
+                      ? `威胁等级: ${threatLevelText} | 建议立即采取行动`
                       : '所有系统运行正常 | 无威胁检测'}
                   </p>
                   {logAnalysis && (
@@ -1321,6 +1384,63 @@ export default function Dashboard() {
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* 日志审计记录 */}
+          <div className="bg-slate-900/50 backdrop-blur border border-white/5 rounded-lg p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-white flex items-center gap-2">
+                <Eye className="w-5 h-5 text-cyan-400" />
+                日志审计记录
+              </h3>
+              <button
+                onClick={loadLogRecords}
+                className="text-xs text-cyan-400 hover:text-cyan-300 transition-colors"
+              >
+                刷新
+              </button>
+            </div>
+
+            {logRecordsError && (
+              <div className="mb-3 text-sm text-red-400">{logRecordsError}</div>
+            )}
+
+            {logRecords.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-gray-400 border-b border-slate-700">
+                      <th className="py-2 pr-4">时间</th>
+                      <th className="py-2 pr-4">文件</th>
+                      <th className="py-2 pr-4">等级</th>
+                      <th className="py-2 pr-4">类型</th>
+                      <th className="py-2 pr-4">源 IP</th>
+                      <th className="py-2 pr-4">摘要</th>
+                      <th className="py-2">状态</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {logRecords.map((record) => (
+                      <tr key={record.id} className="border-b border-slate-800 text-gray-300">
+                        <td className="py-2 pr-4 whitespace-nowrap">
+                          {formatLogTime(record.upload_time)}
+                        </td>
+                        <td className="py-2 pr-4">{record.filename || '-'}</td>
+                        <td className={`py-2 pr-4 ${getThreatLevelTextColor(record.threat_level)}`}>
+                          {record.threat_level || 'Unknown'}
+                        </td>
+                        <td className="py-2 pr-4">{record.attack_type || '-'}</td>
+                        <td className="py-2 pr-4 font-mono">{record.source_ip || '-'}</td>
+                        <td className="py-2 pr-4 max-w-[360px] truncate">{record.summary || '-'}</td>
+                        <td className="py-2">{record.status || '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="text-gray-400 text-sm">暂无日志审计记录</div>
+            )}
           </div>
         </div>
       </main>

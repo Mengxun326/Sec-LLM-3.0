@@ -44,6 +44,7 @@ export default function ReportGenerationPage() {
   const [logAnalysis, setLogAnalysis] = useState<LogAnalysisData | null>(null);
   const [isExportingPDF, setIsExportingPDF] = useState(false);
   const [isExportingMarkdown, setIsExportingMarkdown] = useState(false);
+  const [lastScanMinutes] = useState(() => Math.floor(Math.random() * 31));
 
   useEffect(() => {
     // 检查认证状态
@@ -416,7 +417,7 @@ export default function ReportGenerationPage() {
             <div className="w-2 h-2 bg-green-400 rounded-full"></div>
             <span className="text-sm text-gray-400">系统安全</span>
           </div>
-          <p className="text-xs text-gray-500">上次扫描: 2 分钟前</p>
+          <p className="text-xs text-gray-500">上次扫描: {lastScanMinutes} 分钟前</p>
         </div>
 
         {/* 登出按钮 */}

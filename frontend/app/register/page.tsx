@@ -41,15 +41,9 @@ export default function RegisterPage() {
         email: email || undefined,
         full_name: fullName || undefined
       });
-      
-      // Save token to localStorage
-      localStorage.setItem('token', response.access_token);
-      
-      // 存储用户信息
-      localStorage.setItem('user', JSON.stringify(response.user));
-      
-      // Redirect to dashboard
-      router.push('/');
+
+      alert(response.message || '注册成功！验证邮件已发送到您的邮箱，请查收链接以激活账户。');
+      router.push('/login');
     } catch (err: any) {
       setError(err.response?.data?.detail || '注册失败，请稍后重试');
     } finally {
@@ -149,7 +143,7 @@ export default function RegisterPage() {
               {/* Email Field */}
               <div>
                 <label htmlFor="email" className="block text-sm font-medium text-gray-300 mb-2">
-                  邮箱
+                  邮箱 <span className="text-red-400">*</span>
                 </label>
                 <div className="relative">
                   <Mail className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
@@ -158,7 +152,8 @@ export default function RegisterPage() {
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    placeholder="请输入邮箱（选填）"
+                    placeholder="请输入邮箱"
+                    required
                     className="w-full pl-10 pr-4 py-3 bg-slate-900 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
                   />
                 </div>
