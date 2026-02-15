@@ -19,6 +19,8 @@ import {
   User,
   Calendar,
   Clock,
+  Wrench,
+  Activity,
 } from 'lucide-react';
 import { type AnalysisResult } from '@/lib/api';
 import html2canvas from 'html2canvas';
@@ -36,12 +38,27 @@ interface LogAnalysisData {
   savedAt: string;
 }
 
+interface ThreatIntelReportData {
+  ioc: string;
+  detectedType: string;
+  verdict: string;
+  score: number;
+  sourceHits: number;
+  enrichment: {
+    summary?: string;
+    tags?: string[];
+  };
+  reportText: string;
+  savedAt: string;
+}
+
 export default function ReportGenerationPage() {
   const router = useRouter();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [activeMenu, setActiveMenu] = useState('reports');
   const [chatHistory, setChatHistory] = useState<Message[]>([]);
   const [logAnalysis, setLogAnalysis] = useState<LogAnalysisData | null>(null);
+  const [threatIntelReport, setThreatIntelReport] = useState<ThreatIntelReportData | null>(null);
   const [isExportingPDF, setIsExportingPDF] = useState(false);
   const [isExportingMarkdown, setIsExportingMarkdown] = useState(false);
   const [lastScanMinutes] = useState(() => Math.floor(Math.random() * 31));
@@ -74,6 +91,15 @@ export default function ReportGenerationPage() {
           setLogAnalysis(parsedLog);
         }
       }
+
+      // 读取威胁情报研判结果
+      const savedThreatIntel = localStorage.getItem('cyberguard_threat_intel_report');
+      if (savedThreatIntel) {
+        const parsedThreatIntel = JSON.parse(savedThreatIntel);
+        if (parsedThreatIntel?.reportText) {
+          setThreatIntelReport(parsedThreatIntel);
+        }
+      }
     } catch (error) {
       console.error('读取报告数据失败:', error);
     }
@@ -94,6 +120,10 @@ export default function ReportGenerationPage() {
       router.push('/log-analysis');
     } else if (menu === 'reports') {
       router.push('/report-generation');
+    } else if (menu === 'threat-intel') {
+      router.push('/threat-intel-agent');
+    } else if (menu === 'security-tools') {
+      router.push('/security-tools');
     }
   };
 
@@ -319,6 +349,25 @@ export default function ReportGenerationPage() {
         });
       }
 
+      // 板块三：威胁情报自动化研判
+      if (threatIntelReport && threatIntelReport.reportText) {
+        markdown += '\n---\n\n';
+        markdown += '## 🛰️ 威胁情报自动化研判\n\n';
+        markdown += `**IOC**: ${threatIntelReport.ioc}\n\n`;
+        markdown += `**检测类型**: ${threatIntelReport.detectedType}\n\n`;
+        markdown += `**风险评分**: ${threatIntelReport.score}/100\n\n`;
+        markdown += `**判定结果**: ${threatIntelReport.verdict}\n\n`;
+        markdown += `**命中源数量**: ${threatIntelReport.sourceHits}\n\n`;
+        if (threatIntelReport.enrichment?.summary) {
+          markdown += `**情报摘要**: ${threatIntelReport.enrichment.summary}\n\n`;
+        }
+        if (threatIntelReport.enrichment?.tags?.length) {
+          markdown += `**标签**: ${threatIntelReport.enrichment.tags.join(', ')}\n\n`;
+        }
+        markdown += '### AI 研判报告\n\n';
+        markdown += `${threatIntelReport.reportText}\n\n`;
+      }
+
       // 生成文件并下载
       const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
       const url = URL.createObjectURL(blob);
@@ -343,7 +392,10 @@ export default function ReportGenerationPage() {
     return null;
   }
 
-  const hasData = (chatHistory && chatHistory.length > 0) || (logAnalysis && logAnalysis.analysisResult);
+  const hasData =
+    (chatHistory && chatHistory.length > 0) ||
+    (logAnalysis && logAnalysis.analysisResult) ||
+    (threatIntelReport && threatIntelReport.reportText);
 
   return (
     <div className="flex h-screen bg-slate-950 overflow-hidden">
@@ -387,6 +439,18 @@ export default function ReportGenerationPage() {
           </button>
 
           <button
+            onClick={() => handleMenuClick('threat-intel')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${
+              activeMenu === 'threat-intel'
+                ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
+                : 'text-gray-400 hover:text-white hover:bg-slate-800/50'
+            }`}
+          >
+            <Activity className="w-5 h-5" />
+            <span className="font-medium">威胁情报研判</span>
+          </button>
+
+          <button
             onClick={() => handleMenuClick('analysis')}
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${
               activeMenu === 'analysis'
@@ -408,6 +472,17 @@ export default function ReportGenerationPage() {
           >
             <FileText className="w-5 h-5" />
             <span className="font-medium">报告生成</span>
+          </button>
+          <button
+            onClick={() => handleMenuClick('security-tools')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${
+              activeMenu === 'security-tools'
+                ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
+                : 'text-gray-400 hover:text-white hover:bg-slate-800/50'
+            }`}
+          >
+            <Wrench className="w-5 h-5" />
+            <span className="font-medium">安全工具箱</span>
           </button>
         </nav>
 
@@ -450,7 +525,7 @@ export default function ReportGenerationPage() {
               <div className="text-center">
                 <FileText className="w-16 h-16 text-gray-600 mx-auto mb-4" />
                 <h2 className="text-xl font-semibold text-gray-400 mb-2">暂无待生成的报告数据</h2>
-                <p className="text-gray-500 mb-6">请先进行日志分析或 AI 对话</p>
+                <p className="text-gray-500 mb-6">请先进行日志分析、AI 对话或威胁情报研判</p>
                 <div className="flex gap-4 justify-center">
                   <button
                     onClick={() => router.push('/log-analysis')}
@@ -463,6 +538,12 @@ export default function ReportGenerationPage() {
                     className="px-4 py-2 bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 rounded-lg hover:bg-cyan-500/30 transition-all"
                   >
                     前往 AI 对话
+                  </button>
+                  <button
+                    onClick={() => router.push('/threat-intel-agent')}
+                    className="px-4 py-2 bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 rounded-lg hover:bg-cyan-500/30 transition-all"
+                  >
+                    前往情报研判
                   </button>
                 </div>
               </div>
@@ -612,6 +693,31 @@ export default function ReportGenerationPage() {
                           </div>
                         </div>
                       ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 板块三：威胁情报自动化研判 */}
+                {threatIntelReport && threatIntelReport.reportText && (
+                  <div className="mt-8 border-t border-slate-700 pt-6">
+                    <h2 className="text-2xl font-bold text-white mb-4 flex items-center gap-2">
+                      <Activity className="w-6 h-6 text-cyan-400" />
+                      威胁情报自动化研判
+                    </h2>
+                    <div className="bg-slate-900/50 rounded-lg p-4 mb-4 border border-slate-700">
+                      <div className="grid grid-cols-2 gap-2 text-sm">
+                        <div><span className="text-gray-400">IOC:</span> <span className="text-white font-mono">{threatIntelReport.ioc}</span></div>
+                        <div><span className="text-gray-400">类型:</span> <span className="text-white">{threatIntelReport.detectedType}</span></div>
+                        <div><span className="text-gray-400">风险评分:</span> <span className="text-cyan-300 font-semibold">{threatIntelReport.score}/100</span></div>
+                        <div><span className="text-gray-400">判定:</span> <span className="text-white">{threatIntelReport.verdict}</span></div>
+                      </div>
+                      {threatIntelReport.enrichment?.summary && (
+                        <p className="text-gray-300 mt-3">情报摘要：{threatIntelReport.enrichment.summary}</p>
+                      )}
+                    </div>
+                    <div className="bg-slate-900/50 rounded-lg p-4 border border-slate-700">
+                      <h3 className="text-lg font-semibold text-cyan-400 mb-2">AI 研判报告</h3>
+                      <p className="text-gray-300 leading-relaxed whitespace-pre-wrap">{threatIntelReport.reportText}</p>
                     </div>
                   </div>
                 )}

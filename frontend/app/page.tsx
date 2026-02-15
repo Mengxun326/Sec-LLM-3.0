@@ -29,6 +29,8 @@ import {
   Clock,
   Zap,
   ArrowRight,
+  Wrench,
+  Activity,
 } from 'lucide-react';
 import { getDashboardStats, getLogRecords, type AnalysisResult, type LogRecord, type UserInfo } from '@/lib/api';
 import LLMProviderToggle from '@/components/LLMProviderToggle';
@@ -444,6 +446,10 @@ export default function Dashboard() {
       router.push('/log-analysis');
     } else if (menu === 'reports') {
       router.push('/report-generation');
+    } else if (menu === 'threat-intel') {
+      router.push('/threat-intel-agent');
+    } else if (menu === 'security-tools') {
+      router.push('/security-tools');
     }
   };
 
@@ -483,6 +489,24 @@ export default function Dashboard() {
       keywords: ['报告', 'report', '生成', '导出', 'pdf', 'markdown', '审计报告'],
       path: '/report-generation',
       icon: <FileText className="w-4 h-4" />,
+      category: 'page',
+    },
+    {
+      id: 'security-tools',
+      title: '安全工具箱',
+      description: '钓鱼邮件鉴定与蓝队规则生成',
+      keywords: ['安全工具箱', 'security tools', 'phishing', 'yara', 'snort', '规则生成'],
+      path: '/security-tools',
+      icon: <Wrench className="w-4 h-4" />,
+      category: 'page',
+    },
+    {
+      id: 'threat-intel',
+      title: '威胁情报研判',
+      description: 'IOC 自动识别、情报富化与 AI 研判',
+      keywords: ['威胁情报', 'ioc', 'ip', 'domain', 'hash', 'enrichment', '研判'],
+      path: '/threat-intel-agent',
+      icon: <Activity className="w-4 h-4" />,
       category: 'page',
     },
     {
@@ -659,6 +683,8 @@ export default function Dashboard() {
       handleMenuClick('analysis');
     } else if (item.path === '/report-generation') {
       handleMenuClick('reports');
+    } else if (item.path === '/threat-intel-agent') {
+      handleMenuClick('threat-intel');
     }
     
     router.push(item.path);
@@ -743,6 +769,18 @@ export default function Dashboard() {
           </button>
 
           <button
+            onClick={() => handleMenuClick('threat-intel')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${
+              activeMenu === 'threat-intel'
+                ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
+                : 'text-gray-400 hover:text-white hover:bg-slate-800/50'
+            }`}
+          >
+            <Activity className="w-5 h-5" />
+            <span className="font-medium">威胁情报研判</span>
+          </button>
+
+          <button
             onClick={() => handleMenuClick('analysis')}
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${
               activeMenu === 'analysis'
@@ -764,6 +802,17 @@ export default function Dashboard() {
           >
             <FileText className="w-5 h-5" />
             <span className="font-medium">报告生成</span>
+          </button>
+          <button
+            onClick={() => handleMenuClick('security-tools')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${
+              activeMenu === 'security-tools'
+                ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
+                : 'text-gray-400 hover:text-white hover:bg-slate-800/50'
+            }`}
+          >
+            <Wrench className="w-5 h-5" />
+            <span className="font-medium">安全工具箱</span>
           </button>
         </nav>
 

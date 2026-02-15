@@ -211,6 +211,88 @@ export interface KnowledgeFilesResponse {
   files: KnowledgeFile[];
 }
 
+export interface PhishingAnalyzeResult {
+  risk_score: number;
+  verdict: string;
+  dimensions: Record<string, number>;
+  suspicious_urls: string[];
+  suspicious_ips: string[];
+  summary: string;
+  recommendations: string[];
+}
+
+export interface PhishingAnalyzeResponse {
+  status: 'success' | 'error';
+  provider: 'local' | 'cloud';
+  result: PhishingAnalyzeResult;
+}
+
+export interface CodeAuditFinding {
+  title: string;
+  severity: 'Low' | 'Medium' | 'High' | 'Critical' | string;
+  line_hint: string;
+  description: string;
+  fix: string;
+}
+
+export interface CodeAuditResult {
+  risk_level: 'Low' | 'Medium' | 'High' | 'Critical' | string;
+  findings: CodeAuditFinding[];
+  fixed_code: string;
+  summary: string;
+}
+
+export interface CodeAuditResponse {
+  status: 'success' | 'error';
+  provider: 'local' | 'cloud';
+  result: CodeAuditResult;
+}
+
+export interface ReportExplainResult {
+  executive_summary: string;
+  critical_findings: Array<{ item: string; risk: string; impact: string; action: string }>;
+  exposed_ports: string[];
+  priority_actions: string[];
+  plain_language_brief: string;
+}
+
+export interface ReportExplainResponse {
+  status: 'success' | 'error';
+  provider: 'local' | 'cloud';
+  result: ReportExplainResult;
+}
+
+export type ThreatIntelIocType = 'auto' | 'ip' | 'domain' | 'md5' | 'sha256';
+
+export interface ThreatIntelSignal {
+  source: string;
+  status: string;
+  score: number;
+  confidence: number;
+  tags: string[];
+  summary: string;
+  evidence: Record<string, unknown>;
+}
+
+export interface ThreatIntelEnrichment {
+  signals: ThreatIntelSignal[];
+  tags: string[];
+  confidence: number;
+  summary: string;
+}
+
+export interface ThreatIntelEnrichResponse {
+  status: 'success' | 'error';
+  ioc: string;
+  normalized_ioc: string;
+  detected_type: Exclude<ThreatIntelIocType, 'auto'>;
+  source_hits: number;
+  total_score: number;
+  verdict: string;
+  source_status: Record<string, { status: string; reason?: string }>;
+  enrichment: ThreatIntelEnrichment;
+}
+
 export const uploadLogFile = async (file: File): Promise<LogAnalysisResponse> => {
   const formData = new FormData();
   formData.append('file', file);
@@ -315,6 +397,35 @@ export const getKnowledgeFiles = async (): Promise<KnowledgeFilesResponse> => {
 export const deleteKnowledgeFile = async (fileId: number) => {
   const response = await api.delete(`/api/knowledge/files/${fileId}`);
   return response.data as { status: string; message?: string };
+};
+
+export const analyzePhishingEmail = async (content: string): Promise<PhishingAnalyzeResponse> => {
+  const response = await api.post<PhishingAnalyzeResponse>('/api/security-tools/phishing-analyzer', { content });
+  return response.data;
+};
+
+export const analyzeCodeVulnerabilities = async (
+  code: string,
+  language: string
+): Promise<CodeAuditResponse> => {
+  const response = await api.post<CodeAuditResponse>('/api/security-tools/code-audit', { code, language });
+  return response.data;
+};
+
+export const explainScanReport = async (content: string): Promise<ReportExplainResponse> => {
+  const response = await api.post<ReportExplainResponse>('/api/security-tools/report-explainer', { content });
+  return response.data;
+};
+
+export const enrichThreatIntel = async (
+  ioc: string,
+  iocType: ThreatIntelIocType = 'auto'
+): Promise<ThreatIntelEnrichResponse> => {
+  const response = await api.post<ThreatIntelEnrichResponse>('/api/security-tools/threat-intel/enrich', {
+    ioc,
+    ioc_type: iocType,
+  });
+  return response.data;
 };
 
 export default api;

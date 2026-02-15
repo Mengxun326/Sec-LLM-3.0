@@ -25,6 +25,7 @@ import requests
 import httpx
 import json
 import re
+import ipaddress
 from openai import OpenAI  # 引入 OpenAI 库
 
 # ================= 数据库 & 认证相关导入 =================
@@ -46,6 +47,9 @@ class Settings(BaseSettings):
     DEEPSEEK_API_KEY: Optional[str] = None
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
     DEEPSEEK_MODEL_NAME: str = "deepseek-chat"
+    ABUSEIPDB_API_KEY: Optional[str] = None
+    OTX_API_KEY: Optional[str] = None
+    THREAT_INTEL_TIMEOUT_SECONDS: float = 4.0
 
     # 本地 Ollama 配置
     OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
@@ -521,6 +525,35 @@ class ResendVerificationRequest(BaseModel):
 
 class LLMProviderUpdate(BaseModel):
     provider: str
+
+
+class PhishingAnalyzeRequest(BaseModel):
+    content: str
+
+
+class RuleGeneratorRequest(BaseModel):
+    requirement: str
+    rule_type: str = "yara"
+
+
+class CodeAuditRequest(BaseModel):
+    code: str
+    language: str = "python"
+
+
+class ReportExplainRequest(BaseModel):
+    content: str
+
+
+class ThreatIntelEnrichRequest(BaseModel):
+    ioc: str
+    ioc_type: str = "auto"
+
+
+class ThreatIntelReportRequest(BaseModel):
+    ioc: str
+    detected_type: str
+    enrichment: Dict[str, Any]
 
 
 async def send_verification_email(email: str, token: str):
@@ -1216,6 +1249,623 @@ def real_llm_analysis(log_content: str, provider: Optional[str] = None):
             "details": [],
             "advice": "请检查后台日志或显存状态。"
         }
+
+
+def _single_shot_completion(messages: List[Dict[str, str]], provider: str) -> str:
+    """统一单次非流式补全，用于工具类结构化输出。"""
+    selected_provider = normalize_provider(provider)
+    if selected_provider == "cloud":
+        if not settings.DEEPSEEK_API_KEY or deepseek_client is None:
+            raise RuntimeError("云端引擎未配置")
+        response = deepseek_client.chat.completions.create(
+            model=settings.DEEPSEEK_MODEL_NAME,
+            messages=messages,
+            temperature=0.2,
+            response_format={"type": "json_object"},
+        )
+        return response.choices[0].message.content or ""
+
+    payload = {
+        "model": settings.OLLAMA_MODEL_NAME,
+        "messages": messages,
+        "stream": False,
+        "format": "json",
+        "options": {"temperature": 0.2, "num_ctx": 4096},
+    }
+    resp = requests.post(f"{settings.OLLAMA_BASE_URL}/api/chat", json=payload, timeout=60)
+    resp.raise_for_status()
+    return resp.json().get("message", {}).get("content", "")
+
+
+IOC_IPV4_RE = re.compile(r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$")
+IOC_MD5_RE = re.compile(r"^[a-fA-F0-9]{32}$")
+IOC_SHA256_RE = re.compile(r"^[a-fA-F0-9]{64}$")
+IOC_DOMAIN_RE = re.compile(r"^(?!:\/\/)([a-zA-Z0-9-_]+\.)*[a-zA-Z0-9][a-zA-Z0-9-_]+\.[a-zA-Z]{2,11}?$")
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _detect_ioc_type(ioc: str) -> str:
+    candidate = (ioc or "").strip()
+    if not candidate:
+        return "unknown"
+
+    if IOC_IPV4_RE.match(candidate):
+        try:
+            ipaddress.ip_address(candidate)
+            return "ip"
+        except ValueError:
+            pass
+
+    if IOC_MD5_RE.match(candidate):
+        return "md5"
+
+    if IOC_SHA256_RE.match(candidate):
+        return "sha256"
+
+    if IOC_DOMAIN_RE.match(candidate):
+        return "domain"
+
+    return "unknown"
+
+
+def _normalize_ioc(ioc: str, ioc_type: str) -> str:
+    value = (ioc or "").strip()
+    if ioc_type in {"domain", "md5", "sha256"}:
+        return value.lower()
+    return value
+
+
+async def _fetch_abuseipdb(ioc: str) -> Dict[str, Any]:
+    source = "abuseipdb"
+    if not settings.ABUSEIPDB_API_KEY:
+        return {"source": source, "status": "skipped", "reason": "missing_api_key"}
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                "https://api.abuseipdb.com/api/v2/check",
+                params={"ipAddress": ioc, "maxAgeInDays": "90"},
+                headers={
+                    "Accept": "application/json",
+                    "Key": settings.ABUSEIPDB_API_KEY,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data") or {}
+            score = max(0, min(100, _safe_int(data.get("abuseConfidenceScore"), 0)))
+            tags = []
+            if data.get("usageType"):
+                tags.append(str(data.get("usageType")))
+            if data.get("isp"):
+                tags.append(str(data.get("isp")))
+            return {
+                "source": source,
+                "status": "success",
+                "score": score,
+                "confidence": min(100, 40 + score // 2),
+                "tags": tags[:8],
+                "summary": f"近90天上报次数: {_safe_int(data.get('totalReports'), 0)}",
+                "evidence": {
+                    "country_code": data.get("countryCode"),
+                    "total_reports": _safe_int(data.get("totalReports"), 0),
+                    "last_reported_at": data.get("lastReportedAt"),
+                },
+            }
+    except httpx.TimeoutException:
+        return {"source": source, "status": "timeout", "reason": "request_timeout"}
+    except Exception as e:
+        return {"source": source, "status": "error", "reason": str(e)[:180]}
+
+
+async def _fetch_otx(ioc: str, ioc_type: str) -> Dict[str, Any]:
+    source = "alienvault_otx"
+    route_type = {
+        "ip": "IPv4",
+        "domain": "domain",
+        "md5": "file",
+        "sha256": "file",
+    }.get(ioc_type)
+    if not route_type:
+        return {"source": source, "status": "skipped", "reason": "unsupported_ioc_type"}
+
+    try:
+        headers: Dict[str, str] = {}
+        if settings.OTX_API_KEY:
+            headers["X-OTX-API-KEY"] = settings.OTX_API_KEY
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"https://otx.alienvault.com/api/v1/indicators/{route_type}/{ioc}/general",
+                headers=headers,
+            )
+            resp.raise_for_status()
+            data = resp.json() or {}
+            pulses = (data.get("pulse_info") or {}).get("pulses") or []
+            pulse_count = len(pulses)
+            score = min(100, pulse_count * 15)
+            tag_set = set()
+            for pulse in pulses[:20]:
+                for t in pulse.get("tags") or []:
+                    if t:
+                        tag_set.add(str(t).strip())
+            return {
+                "source": source,
+                "status": "success",
+                "score": score,
+                "confidence": min(100, 30 + pulse_count * 10),
+                "tags": sorted(tag_set)[:15],
+                "summary": f"关联情报脉冲数: {pulse_count}",
+                "evidence": {
+                    "pulse_count": pulse_count,
+                    "reputation": data.get("reputation"),
+                    "validation": data.get("validation"),
+                },
+            }
+    except httpx.TimeoutException:
+        return {"source": source, "status": "timeout", "reason": "request_timeout"}
+    except Exception as e:
+        return {"source": source, "status": "error", "reason": str(e)[:180]}
+
+
+def _threat_verdict(score: int) -> str:
+    if score >= 80:
+        return "高危"
+    if score >= 50:
+        return "中危"
+    if score > 0:
+        return "低危"
+    return "未见明显恶意"
+
+
+@app.post("/api/security-tools/phishing-analyzer")
+def phishing_analyzer(
+    req: PhishingAnalyzeRequest,
+    current_user: Dict[str, Any] = Depends(get_current_active_user),
+):
+    if not req.content or not req.content.strip():
+        raise HTTPException(status_code=400, detail="邮件内容不能为空")
+
+    provider = get_user_provider(current_user)
+    system_prompt = """
+你是资深反钓鱼分析师。请对输入邮件进行风险评估，并且只返回 JSON。
+输出字段必须包含：
+{
+  "risk_score": 0-100 的整数,
+  "verdict": "低风险|中风险|高风险",
+  "dimensions": {
+    "sender_spoofing": 0-100,
+    "urgency_language": 0-100,
+    "malicious_links": 0-100,
+    "attachment_risk": 0-100
+  },
+  "suspicious_urls": [字符串数组],
+  "suspicious_ips": [字符串数组],
+  "summary": "中文总结",
+  "recommendations": ["中文建议1","中文建议2"]
+}
+不要输出任何 markdown 或解释。
+"""
+    user_prompt = f"请分析这封可疑邮件：\n\n{req.content[:15000]}"
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    try:
+        raw = _single_shot_completion(messages, provider)
+        parsed = extract_json_from_text(raw) or {}
+        return {
+            "status": "success",
+            "provider": provider,
+            "result": {
+                "risk_score": int(parsed.get("risk_score", 0)),
+                "verdict": parsed.get("verdict", "低风险"),
+                "dimensions": parsed.get("dimensions", {}),
+                "suspicious_urls": parsed.get("suspicious_urls", []),
+                "suspicious_ips": parsed.get("suspicious_ips", []),
+                "summary": parsed.get("summary", "未提取到有效结果"),
+                "recommendations": parsed.get("recommendations", []),
+            },
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"分析失败: {str(e)}")
+
+
+@app.post("/api/security-tools/rule-generator")
+async def rule_generator(
+    req: RuleGeneratorRequest,
+    current_user: Dict[str, Any] = Depends(get_current_active_user),
+):
+    if not req.requirement or not req.requirement.strip():
+        raise HTTPException(status_code=400, detail="需求描述不能为空")
+
+    provider = get_user_provider(current_user)
+    rule_type = (req.rule_type or "yara").strip().lower()
+    system_prompt = f"""
+You are a senior blue-team detection engineer.
+Generate practical defensive rules based on user requirement.
+
+Rules:
+1) Output must be in Simplified Chinese.
+2) First provide a short summary.
+3) Then provide the final {rule_type} rule in a fenced code block.
+4) Add a short validation checklist.
+5) Never answer non-security content.
+"""
+    model_messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"需求：{req.requirement}"},
+    ]
+
+    async def generate():
+        try:
+            if provider == "cloud":
+                if not settings.DEEPSEEK_API_KEY:
+                    yield "⚠️ 云端引擎未配置 DEEPSEEK_API_KEY"
+                    return
+                cloud_url = f"{settings.DEEPSEEK_BASE_URL.rstrip('/')}/chat/completions"
+                headers = {"Authorization": f"Bearer {settings.DEEPSEEK_API_KEY}"}
+                payload = {
+                    "model": settings.DEEPSEEK_MODEL_NAME,
+                    "messages": model_messages,
+                    "stream": True,
+                    "temperature": 0.2,
+                }
+                async with httpx.AsyncClient(timeout=None) as client:
+                    async with client.stream("POST", cloud_url, headers=headers, json=payload) as resp:
+                        if resp.status_code >= 400:
+                            detail = (await resp.aread()).decode("utf-8", errors="ignore")[:600]
+                            yield f"⚠️ 云端请求失败({resp.status_code}): {detail}"
+                            return
+                        async for line in resp.aiter_lines():
+                            if not line:
+                                continue
+                            data = line[5:].strip() if line.startswith("data:") else line.strip()
+                            if not data or data == "[DONE]":
+                                continue
+                            try:
+                                chunk = json.loads(data)
+                            except Exception:
+                                continue
+                            choices = chunk.get("choices") or []
+                            if not choices:
+                                continue
+                            delta = choices[0].get("delta") or {}
+                            content = delta.get("content")
+                            if content:
+                                yield content
+                                await asyncio.sleep(0)
+            else:
+                payload = {
+                    "model": settings.OLLAMA_MODEL_NAME,
+                    "messages": model_messages,
+                    "stream": True,
+                    "options": {"temperature": 0.2},
+                }
+                async with httpx.AsyncClient(timeout=None) as client:
+                    async with client.stream("POST", f"{settings.OLLAMA_BASE_URL}/api/chat", json=payload) as resp:
+                        resp.raise_for_status()
+                        async for line in resp.aiter_lines():
+                            if not line:
+                                continue
+                            try:
+                                chunk = json.loads(line)
+                            except Exception:
+                                continue
+                            content = chunk.get("message", {}).get("content", "")
+                            if content:
+                                yield content
+                                await asyncio.sleep(0)
+        except Exception as e:
+            yield f"⚠️ 生成出错: {str(e)}"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/plain; charset=utf-8",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/api/security-tools/code-audit")
+def code_vulnerability_scanner(
+    req: CodeAuditRequest,
+    current_user: Dict[str, Any] = Depends(get_current_active_user),
+):
+    if not req.code or not req.code.strip():
+        raise HTTPException(status_code=400, detail="代码内容不能为空")
+
+    provider = get_user_provider(current_user)
+    language = (req.language or "python").strip().lower()
+    system_prompt = f"""
+你是高级应用安全代码审计专家。请审计用户提供的 {language} 代码，并且只返回 JSON。
+输出结构：
+{{
+  "risk_level": "Low|Medium|High|Critical",
+  "findings": [
+    {{
+      "title": "漏洞标题",
+      "severity": "Low|Medium|High|Critical",
+      "line_hint": "行号或位置描述",
+      "description": "漏洞说明",
+      "fix": "修复建议"
+    }}
+  ],
+  "fixed_code": "修复后的完整代码（保留换行）",
+  "summary": "中文总结"
+}}
+不要输出 markdown 或解释文本。
+"""
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"请审计并修复以下代码：\n\n{req.code[:30000]}"},
+    ]
+    try:
+        raw = _single_shot_completion(messages, provider)
+        parsed = extract_json_from_text(raw) or {}
+        return {
+            "status": "success",
+            "provider": provider,
+            "result": {
+                "risk_level": parsed.get("risk_level", "Low"),
+                "findings": parsed.get("findings", []),
+                "fixed_code": parsed.get("fixed_code", ""),
+                "summary": parsed.get("summary", "未提取到有效结果"),
+            },
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"代码审计失败: {str(e)}")
+
+
+@app.post("/api/security-tools/report-explainer")
+def scan_report_explainer(
+    req: ReportExplainRequest,
+    current_user: Dict[str, Any] = Depends(get_current_active_user),
+):
+    if not req.content or not req.content.strip():
+        raise HTTPException(status_code=400, detail="报告内容不能为空")
+
+    provider = get_user_provider(current_user)
+    system_prompt = """
+你是资深蓝队分析师。请把扫描报告（例如 Nmap/Nessus）转换为管理层可读的执行摘要，并只返回 JSON。
+输出结构：
+{
+  "executive_summary": "1-2段中文总结",
+  "critical_findings": [
+    {"item":"问题点","risk":"High|Critical|Medium|Low","impact":"影响","action":"建议"}
+  ],
+  "exposed_ports": ["端口/服务列表"],
+  "priority_actions": ["优先行动1","优先行动2","优先行动3"],
+  "plain_language_brief": "给非技术人员的解释"
+}
+不要输出 markdown 或额外说明。
+"""
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"请解析这份扫描报告：\n\n{req.content[:40000]}"},
+    ]
+    try:
+        raw = _single_shot_completion(messages, provider)
+        parsed = extract_json_from_text(raw) or {}
+        return {
+            "status": "success",
+            "provider": provider,
+            "result": {
+                "executive_summary": parsed.get("executive_summary", "未提取到有效结果"),
+                "critical_findings": parsed.get("critical_findings", []),
+                "exposed_ports": parsed.get("exposed_ports", []),
+                "priority_actions": parsed.get("priority_actions", []),
+                "plain_language_brief": parsed.get("plain_language_brief", ""),
+            },
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"报告解析失败: {str(e)}")
+
+
+@app.post("/api/security-tools/threat-intel/enrich")
+async def threat_intel_enrich(
+    req: ThreatIntelEnrichRequest,
+    current_user: Dict[str, Any] = Depends(get_current_active_user),
+):
+    del current_user  # 保留鉴权，避免未登录调用
+    ioc_raw = (req.ioc or "").strip()
+    if not ioc_raw:
+        raise HTTPException(status_code=400, detail="IOC 不能为空")
+
+    requested_type = (req.ioc_type or "auto").strip().lower()
+    detected_type = _detect_ioc_type(ioc_raw)
+    if requested_type != "auto":
+        if requested_type not in {"ip", "domain", "md5", "sha256"}:
+            raise HTTPException(status_code=400, detail="ioc_type 仅支持 auto/ip/domain/md5/sha256")
+        if detected_type != "unknown" and requested_type != detected_type:
+            raise HTTPException(status_code=400, detail=f"IOC 类型不匹配：检测为 {detected_type}")
+        detected_type = requested_type
+
+    if detected_type == "unknown":
+        raise HTTPException(status_code=400, detail="无法识别 IOC 类型，请输入 IPv4/域名/MD5/SHA256")
+
+    normalized_ioc = _normalize_ioc(ioc_raw, detected_type)
+
+    tasks: List[Any] = []
+    source_names: List[str] = []
+
+    if detected_type == "ip":
+        tasks.append(asyncio.wait_for(_fetch_abuseipdb(normalized_ioc), timeout=settings.THREAT_INTEL_TIMEOUT_SECONDS))
+        source_names.append("abuseipdb")
+
+    tasks.append(asyncio.wait_for(_fetch_otx(normalized_ioc, detected_type), timeout=settings.THREAT_INTEL_TIMEOUT_SECONDS))
+    source_names.append("alienvault_otx")
+
+    gather_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    source_status: Dict[str, Dict[str, Any]] = {}
+    successful_results: List[Dict[str, Any]] = []
+
+    for idx, item in enumerate(gather_results):
+        source = source_names[idx]
+        if isinstance(item, Exception):
+            source_status[source] = {
+                "status": "timeout" if isinstance(item, asyncio.TimeoutError) else "error",
+                "reason": str(item)[:180],
+            }
+            continue
+        source_status[source] = {
+            "status": item.get("status", "unknown"),
+            "reason": item.get("reason"),
+        }
+        if item.get("status") == "success":
+            successful_results.append(item)
+
+    if not successful_results:
+        return {
+            "status": "success",
+            "ioc": ioc_raw,
+            "normalized_ioc": normalized_ioc,
+            "detected_type": detected_type,
+            "source_hits": 0,
+            "total_score": 0,
+            "verdict": "未见明显恶意",
+            "source_status": source_status,
+            "enrichment": {
+                "signals": [],
+                "tags": [],
+                "confidence": 0,
+                "summary": "未从情报源获取到有效结果（可能因超时、配额或 API Key 未配置）",
+            },
+        }
+
+    total_score_raw = max([_safe_int(x.get("score"), 0) for x in successful_results])
+    total_score = min(100, total_score_raw + max(0, (len(successful_results) - 1) * 5))
+    confidence = min(
+        100,
+        int(sum([_safe_int(x.get("confidence"), 0) for x in successful_results]) / max(1, len(successful_results))),
+    )
+    merged_tags = []
+    for x in successful_results:
+        merged_tags.extend(x.get("tags") or [])
+    merged_tags = sorted(list({t for t in merged_tags if t}))[:20]
+
+    return {
+        "status": "success",
+        "ioc": ioc_raw,
+        "normalized_ioc": normalized_ioc,
+        "detected_type": detected_type,
+        "source_hits": len(successful_results),
+        "total_score": total_score,
+        "verdict": _threat_verdict(total_score),
+        "source_status": source_status,
+        "enrichment": {
+            "signals": successful_results,
+            "tags": merged_tags,
+            "confidence": confidence,
+            "summary": " | ".join([x.get("summary", "") for x in successful_results if x.get("summary")])[:600],
+        },
+    }
+
+
+@app.post("/api/security-tools/threat-intel/report")
+async def threat_intel_report(
+    req: ThreatIntelReportRequest,
+    current_user: Dict[str, Any] = Depends(get_current_active_user),
+):
+    provider = get_user_provider(current_user)
+    ioc = (req.ioc or "").strip()
+    detected_type = (req.detected_type or "").strip().lower()
+    if not ioc or not detected_type or not req.enrichment:
+        raise HTTPException(status_code=400, detail="缺少必要字段 ioc/detected_type/enrichment")
+
+    system_prompt = """
+你是资深威胁情报分析师。请基于给定情报证据撰写中文研判报告。
+要求：
+1) 输出为 Markdown，包含：执行摘要、威胁归因猜测、主要攻击手法、处置建议、误报风险提示。
+2) 结论要标注“依据来源”（例如 AbuseIPDB/OTX）。
+3) 禁止编造不存在的数据；不确定时明确写“暂无充分证据”。
+4) 不输出 JSON。
+"""
+    model_messages = [
+        {"role": "system", "content": system_prompt},
+        {
+            "role": "user",
+            "content": (
+                f"IOC: {ioc}\n"
+                f"类型: {detected_type}\n"
+                f"标准化情报数据(JSON):\n{json.dumps(req.enrichment, ensure_ascii=False)[:24000]}"
+            ),
+        },
+    ]
+
+    async def generate():
+        try:
+            if provider == "cloud":
+                if not settings.DEEPSEEK_API_KEY:
+                    yield "⚠️ 云端引擎未配置 DEEPSEEK_API_KEY"
+                    return
+                cloud_url = f"{settings.DEEPSEEK_BASE_URL.rstrip('/')}/chat/completions"
+                headers = {"Authorization": f"Bearer {settings.DEEPSEEK_API_KEY}"}
+                payload = {
+                    "model": settings.DEEPSEEK_MODEL_NAME,
+                    "messages": model_messages,
+                    "stream": True,
+                    "temperature": 0.2,
+                }
+                async with httpx.AsyncClient(timeout=None) as client:
+                    async with client.stream("POST", cloud_url, headers=headers, json=payload) as resp:
+                        if resp.status_code >= 400:
+                            detail = (await resp.aread()).decode("utf-8", errors="ignore")[:600]
+                            yield f"⚠️ 云端请求失败({resp.status_code}): {detail}"
+                            return
+                        async for line in resp.aiter_lines():
+                            if not line:
+                                continue
+                            data = line[5:].strip() if line.startswith("data:") else line.strip()
+                            if not data or data == "[DONE]":
+                                continue
+                            try:
+                                chunk = json.loads(data)
+                            except Exception:
+                                continue
+                            choices = chunk.get("choices") or []
+                            if not choices:
+                                continue
+                            delta = choices[0].get("delta") or {}
+                            content = delta.get("content")
+                            if content:
+                                yield content
+                                await asyncio.sleep(0)
+            else:
+                payload = {
+                    "model": settings.OLLAMA_MODEL_NAME,
+                    "messages": model_messages,
+                    "stream": True,
+                    "options": {"temperature": 0.2},
+                }
+                async with httpx.AsyncClient(timeout=None) as client:
+                    async with client.stream("POST", f"{settings.OLLAMA_BASE_URL}/api/chat", json=payload) as resp:
+                        resp.raise_for_status()
+                        async for line in resp.aiter_lines():
+                            if not line:
+                                continue
+                            try:
+                                chunk = json.loads(line)
+                            except Exception:
+                                continue
+                            content = chunk.get("message", {}).get("content", "")
+                            if content:
+                                yield content
+                                await asyncio.sleep(0)
+        except Exception as e:
+            yield f"⚠️ 研判生成出错: {str(e)}"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/plain; charset=utf-8",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 # --- 接口 6: 文件上传 (支持 RAG 知识库上传和日志分析) ---
 @app.post("/api/upload")

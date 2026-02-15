@@ -16,6 +16,8 @@ import {
   Send,
   Bot,
   Paperclip,
+  Wrench,
+  Activity,
 } from 'lucide-react';
 import {
   createChatHistory,
@@ -296,6 +298,10 @@ export default function ChatPage() {
       router.push('/log-analysis');
     } else if (menu === 'reports') {
       router.push('/report-generation');
+    } else if (menu === 'threat-intel') {
+      router.push('/threat-intel-agent');
+    } else if (menu === 'security-tools') {
+      router.push('/security-tools');
     }
   };
 
@@ -502,6 +508,18 @@ export default function ChatPage() {
           </button>
 
           <button
+            onClick={() => handleMenuClick('threat-intel')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${
+              activeMenu === 'threat-intel'
+                ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
+                : 'text-gray-400 hover:text-white hover:bg-slate-800/50'
+            }`}
+          >
+            <Activity className="w-5 h-5" />
+            <span className="font-medium">威胁情报研判</span>
+          </button>
+
+          <button
             onClick={() => handleMenuClick('analysis')}
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${
               activeMenu === 'analysis'
@@ -523,6 +541,17 @@ export default function ChatPage() {
           >
             <FileText className="w-5 h-5" />
             <span className="font-medium">报告生成</span>
+          </button>
+          <button
+            onClick={() => handleMenuClick('security-tools')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${
+              activeMenu === 'security-tools'
+                ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
+                : 'text-gray-400 hover:text-white hover:bg-slate-800/50'
+            }`}
+          >
+            <Wrench className="w-5 h-5" />
+            <span className="font-medium">安全工具箱</span>
           </button>
         </nav>
 
