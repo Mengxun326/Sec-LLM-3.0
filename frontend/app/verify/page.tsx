@@ -1,11 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { verifyEmail } from '@/lib/api';
 import { ArrowRight, CheckCircle2, XCircle } from 'lucide-react';
 
-export default function VerifyPage() {
+function VerifyContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const token = searchParams.get('token');
@@ -116,5 +116,13 @@ export default function VerifyPage() {
         </button>
       </div>
     </div>
+  );
+}
+
+export default function VerifyPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-slate-950 flex items-center justify-center"><div className="text-cyan-400 animate-pulse">加载中...</div></div>}>
+      <VerifyContent />
+    </Suspense>
   );
 }

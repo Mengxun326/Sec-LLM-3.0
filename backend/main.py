@@ -348,6 +348,17 @@ async def get_current_active_user(current_user: Dict[str, Any] = Depends(get_cur
         )
     return current_user
 
+
+async def get_current_admin_user(current_user: Dict[str, Any] = Depends(get_current_active_user)) -> Dict[str, Any]:
+    """获取当前管理员用户（必须登录且角色为 admin）"""
+    if current_user.get("role") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="需要管理员权限",
+        )
+    return current_user
+
+
 # ================= 初始化默认管理员账户 =================
 def init_default_admin():
     """创建默认管理员账户（如果不存在）"""
@@ -422,6 +433,15 @@ def temp_cleanup_scheduler():
 @app.on_event("startup")
 async def startup_event():
     """应用启动时执行"""
+    # 生产环境必须配置安全的 JWT 密钥
+    env_mode = (settings.ENV_MODE or "dev").strip().lower()
+    unsafe_secret = "default-unsafe-secret-key"
+    if env_mode in ("prod", "production") and settings.JWT_SECRET_KEY == unsafe_secret:
+        raise RuntimeError(
+            "[SECURITY] 生产环境(ENV_MODE=prod)下禁止使用默认 JWT_SECRET_KEY。"
+            "请在 .env 中设置强随机密钥，例如: JWT_SECRET_KEY=your-random-64-char-secret"
+        )
+
     if settings.DATABASE_TYPE != "mysql":
         print("[WARN] DATABASE_TYPE 不是 mysql，当前版本仅支持 MySQL。")
 
@@ -1048,7 +1068,7 @@ def update_chat_history(
 
 # --- 接口 5.1: 临时文件管理 ---
 @app.get("/api/admin/temp-status")
-def get_temp_status():
+def get_temp_status(_current_admin: Dict[str, Any] = Depends(get_current_admin_user)):
     """获取临时文件夹状态"""
     if not os.path.exists(TEMP_DIR):
         return {
@@ -1085,7 +1105,7 @@ def get_temp_status():
     }
 
 @app.post("/api/admin/cleanup-temp")
-def manual_cleanup_temp():
+def manual_cleanup_temp(_current_admin: Dict[str, Any] = Depends(get_current_admin_user)):
     """手动触发临时文件清理"""
     if not os.path.exists(TEMP_DIR):
         return {"status": "success", "message": "临时文件夹不存在，无需清理", "cleaned_count": 0}
@@ -2411,7 +2431,7 @@ def _normalize_chat_role(role: str) -> str:
 @app.post("/api/chat")
 async def chat(
     req: ChatRequest,
-    current_user: Optional[Dict[str, Any]] = Depends(get_current_user),
+    current_user: Dict[str, Any] = Depends(get_current_active_user),
 ):
     active_provider = get_user_provider(current_user)
     provider_model_name = settings.OLLAMA_MODEL_NAME if active_provider == "local" else settings.DEEPSEEK_MODEL_NAME
@@ -2422,10 +2442,10 @@ async def chat(
     if vector_store and req.history:
         search_query = await rewrite_query(req.message, req.history)
 
-    # 🔥 2. RAG 检索 (Step 2)
+    # 🔥 2. RAG 检索 (Step 2，已强制登录，确保按用户隔离)
     context_text = ""
     sources = []
-    rag_filter = {"user_id": str(current_user["id"])} if current_user else None
+    rag_filter = {"user_id": str(current_user["id"])}
     if vector_store:
         try:
             if req.rag_only and hasattr(vector_store, "similarity_search_with_score"):
