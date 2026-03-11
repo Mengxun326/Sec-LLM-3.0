@@ -127,8 +127,19 @@ npm run dev
 - `MYSQL_USER` / `MYSQL_PASSWORD` / `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_DB`
 - `MAIL_USERNAME` / `MAIL_PASSWORD` / `MAIL_FROM` / `MAIL_PORT` / `MAIL_SERVER`
 - `MAIL_FROM_NAME` / `DOMAIN_URL`
+- `SEC_LLM_SKILL_API_KEY`（可选，用于 [OpenClaw Skill](#openclaw-skill-集成) 等外部调用）
 
 > 注意：`DEEPSEEK_API_KEY` 必须为真实可用密钥；否则云端对话会返回 401/400。
+
+### OpenClaw Skill 集成
+
+在 Telegram、Discord 等渠道通过 [OpenClaw](https://github.com/openclaw/openclaw) 调用 Sec-LLM 能力（威胁情报、RAG、钓鱼鉴定等）：
+
+1. 在 `backend/.env` 中设置 `SEC_LLM_SKILL_API_KEY`
+2. 将 `openclaw-skill/sec-llm` 复制到 OpenClaw 的 Skills 目录
+3. 配置 `SEC_LLM_BASE_URL` 与 `SEC_LLM_SKILL_API_KEY` 环境变量
+
+详见 [openclaw-skill/README.md](openclaw-skill/README.md)。
 
 ---
 
