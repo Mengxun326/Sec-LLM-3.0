@@ -1,4 +1,5 @@
 import os
+import secrets
 import shutil
 import threading
 import time
@@ -10,7 +11,7 @@ from typing import Optional, List, Dict, Any
 os.environ['NO_PROXY'] = 'localhost,127.0.0.1'
 os.environ['no_proxy'] = 'localhost,127.0.0.1'
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, status, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, status, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import StreamingResponse
@@ -74,6 +75,9 @@ class Settings(BaseSettings):
     MAIL_SERVER: Optional[str] = None
     MAIL_FROM_NAME: str = "Sec-LLM Security Team"
     DOMAIN_URL: str = "http://localhost:3000"
+
+    # OpenClaw Skill 集成：API Key 认证（可选，配置后允许 X-Skill-Api-Key 调用）
+    SEC_LLM_SKILL_API_KEY: Optional[str] = None
 
     class Config:
         env_file = ".env"
@@ -347,6 +351,35 @@ async def get_current_active_user(current_user: Dict[str, Any] = Depends(get_cur
             headers={"WWW-Authenticate": "Bearer"},
         )
     return current_user
+
+
+async def get_current_user_or_skill(
+    request: Request,
+    token: Optional[str] = Depends(oauth2_scheme),
+    db=Depends(get_db),
+) -> Dict[str, Any]:
+    """支持 JWT 或 OpenClaw Skill API Key 认证。Skill Key 有效时以 admin 身份调用。"""
+    # 1. 优先检查 Skill API Key（用于 OpenClaw 等外部调用）
+    skill_key = request.headers.get("X-Skill-Api-Key")
+    if (
+        settings.SEC_LLM_SKILL_API_KEY
+        and skill_key
+        and secrets.compare_digest(skill_key, settings.SEC_LLM_SKILL_API_KEY)
+    ):
+        with db.cursor() as cursor:
+            cursor.execute("SELECT * FROM users WHERE username=%s", ("admin",))
+            admin_user = cursor.fetchone()
+        if admin_user:
+            return admin_user
+    # 2. 回退到 JWT 认证
+    user = await get_current_user(token, db)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="未登录、Token 已过期或 Skill API Key 无效",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return user
 
 
 async def get_current_admin_user(current_user: Dict[str, Any] = Depends(get_current_active_user)) -> Dict[str, Any]:
@@ -1446,7 +1479,7 @@ def _threat_verdict(score: int) -> str:
 @app.post("/api/security-tools/phishing-analyzer")
 def phishing_analyzer(
     req: PhishingAnalyzeRequest,
-    current_user: Dict[str, Any] = Depends(get_current_active_user),
+    current_user: Dict[str, Any] = Depends(get_current_user_or_skill),
 ):
     if not req.content or not req.content.strip():
         raise HTTPException(status_code=400, detail="邮件内容不能为空")
@@ -1500,7 +1533,7 @@ def phishing_analyzer(
 @app.post("/api/security-tools/rule-generator")
 async def rule_generator(
     req: RuleGeneratorRequest,
-    current_user: Dict[str, Any] = Depends(get_current_active_user),
+    current_user: Dict[str, Any] = Depends(get_current_user_or_skill),
 ):
     if not req.requirement or not req.requirement.strip():
         raise HTTPException(status_code=400, detail="需求描述不能为空")
@@ -1595,7 +1628,7 @@ Rules:
 @app.post("/api/security-tools/code-audit")
 def code_vulnerability_scanner(
     req: CodeAuditRequest,
-    current_user: Dict[str, Any] = Depends(get_current_active_user),
+    current_user: Dict[str, Any] = Depends(get_current_user_or_skill),
 ):
     if not req.code or not req.code.strip():
         raise HTTPException(status_code=400, detail="代码内容不能为空")
@@ -1645,7 +1678,7 @@ def code_vulnerability_scanner(
 @app.post("/api/security-tools/report-explainer")
 def scan_report_explainer(
     req: ReportExplainRequest,
-    current_user: Dict[str, Any] = Depends(get_current_active_user),
+    current_user: Dict[str, Any] = Depends(get_current_user_or_skill),
 ):
     if not req.content or not req.content.strip():
         raise HTTPException(status_code=400, detail="报告内容不能为空")
@@ -1690,7 +1723,7 @@ def scan_report_explainer(
 @app.post("/api/security-tools/threat-intel/enrich")
 async def threat_intel_enrich(
     req: ThreatIntelEnrichRequest,
-    current_user: Dict[str, Any] = Depends(get_current_active_user),
+    current_user: Dict[str, Any] = Depends(get_current_user_or_skill),
 ):
     del current_user  # 保留鉴权，避免未登录调用
     ioc_raw = (req.ioc or "").strip()
@@ -1791,7 +1824,7 @@ async def threat_intel_enrich(
 @app.post("/api/security-tools/threat-intel/report")
 async def threat_intel_report(
     req: ThreatIntelReportRequest,
-    current_user: Dict[str, Any] = Depends(get_current_active_user),
+    current_user: Dict[str, Any] = Depends(get_current_user_or_skill),
 ):
     provider = get_user_provider(current_user)
     ioc = (req.ioc or "").strip()
@@ -1893,7 +1926,7 @@ async def upload_file(
     file: UploadFile = File(...),
     mode: str = "auto",
     db=Depends(get_db),
-    current_user: Dict[str, Any] = Depends(get_current_active_user),
+    current_user: Dict[str, Any] = Depends(get_current_user_or_skill),
 ):
     """
     文件上传接口
@@ -2054,7 +2087,7 @@ async def upload_file(
 @app.get("/api/knowledge/files")
 def list_knowledge_files(
     db=Depends(get_db),
-    current_user: Dict[str, Any] = Depends(get_current_active_user),
+    current_user: Dict[str, Any] = Depends(get_current_user_or_skill),
 ):
     """列出所有已学习的知识库文件"""
     with db.cursor() as cursor:
@@ -2431,7 +2464,7 @@ def _normalize_chat_role(role: str) -> str:
 @app.post("/api/chat")
 async def chat(
     req: ChatRequest,
-    current_user: Dict[str, Any] = Depends(get_current_active_user),
+    current_user: Dict[str, Any] = Depends(get_current_user_or_skill),
 ):
     active_provider = get_user_provider(current_user)
     provider_model_name = settings.OLLAMA_MODEL_NAME if active_provider == "local" else settings.DEEPSEEK_MODEL_NAME

@@ -16,7 +16,8 @@
 <p align="center">
   <a href="https://github.com/yusichen396/Sec-LLM-3.0">GitHub 仓库</a> •
   <a href="#-快速开始">快速开始</a> •
-  <a href="#-功能特性">功能特性</a>
+  <a href="#-功能特性">功能特性</a> •
+  <a href="#openclaw-skill-集成">OpenClaw Skill</a>
 </p>
 
 一个面向网络安全场景的本地/云端 LLM 平台，集成 RAG 知识库、日志分析、威胁情报联网富化、流式对话与仪表盘统计，支持本地 Ollama 与 DeepSeek 云端模型切换。
@@ -38,6 +39,7 @@
 - 🔐 **用户认证**：JWT 认证 + bcrypt 密码加密 + 邮箱验证激活
 - 👤 **用户数据隔离**：日志记录、知识库文件、统计数据按用户隔离
 - 🧹 **临时文件清理**：`temp/` 目录定期清理（默认 24h）
+- 🤝 **OpenClaw Skill**：将 Sec-LLM 能力暴露为 OpenClaw 技能，支持 Telegram/Discord 等渠道调用
 
 ---
 
@@ -127,8 +129,92 @@ npm run dev
 - `MYSQL_USER` / `MYSQL_PASSWORD` / `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_DB`
 - `MAIL_USERNAME` / `MAIL_PASSWORD` / `MAIL_FROM` / `MAIL_PORT` / `MAIL_SERVER`
 - `MAIL_FROM_NAME` / `DOMAIN_URL`
+- `SEC_LLM_SKILL_API_KEY`（可选，用于 [OpenClaw Skill](#openclaw-skill-集成) 等外部调用）
 
 > 注意：`DEEPSEEK_API_KEY` 必须为真实可用密钥；否则云端对话会返回 401/400。
+
+### OpenClaw Skill 集成
+
+将 Sec-LLM 能力暴露为 [OpenClaw](https://github.com/openclaw/openclaw) 技能，使智能体可在 Telegram、Discord、Slack 等渠道调用威胁情报、RAG、钓鱼鉴定、源码审计等功能。
+
+#### 前置条件
+
+- Sec-LLM 后端已部署并可访问
+- OpenClaw 已安装并运行
+
+#### 配置步骤
+
+**1. 在 Sec-LLM 后端启用 Skill API Key**
+
+编辑 `backend/.env`，添加（建议使用强随机字符串）：
+
+```env
+SEC_LLM_SKILL_API_KEY=your-secure-random-key-here
+```
+
+重启 Sec-LLM 后端使配置生效。
+
+**2. 安装 Skill 到 OpenClaw**
+
+将 `sec-llm` 目录复制到 OpenClaw 的 Skills 目录：
+
+```bash
+# 默认路径（按 OpenClaw 版本可能不同）
+mkdir -p ~/.openclaw/workspace/skills
+cp -r openclaw-skill/sec-llm ~/.openclaw/workspace/skills/
+
+# Windows (PowerShell)
+New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.openclaw\workspace\skills"
+Copy-Item -Recurse openclaw-skill\sec-llm "$env:USERPROFILE\.openclaw\workspace\skills\"
+```
+
+**3. 配置 OpenClaw 环境变量**
+
+在 OpenClaw 运行环境中设置（如 `~/.openclaw/.env` 或系统环境变量）：
+
+```bash
+export SEC_LLM_BASE_URL="http://localhost:8000"   # Sec-LLM 后端地址
+export SEC_LLM_SKILL_API_KEY="your-secure-random-key-here"
+```
+
+若 Sec-LLM 与 OpenClaw 不在同一主机，将 `localhost` 改为实际 IP 或域名。
+
+**4. 刷新 Skill**
+
+- 在 OpenClaw 对话中让智能体执行「刷新 skills」
+- 或重启 OpenClaw Gateway：`openclaw gateway restart`
+
+#### 支持能力
+
+| 能力         | 触发场景                     | 说明                         |
+|--------------|------------------------------|------------------------------|
+| 威胁情报     | 用户提供 IP/域名/MD5/SHA256  | 多源富化 + AI 研判报告       |
+| 钓鱼鉴定     | 用户提供邮件内容             | 分析是否为钓鱼/欺诈邮件      |
+| 源码审计     | 用户提供代码或文件路径       | 漏洞识别与修复建议           |
+| 规则生成     | 用户描述检测需求             | YARA/Suricata 等蓝队规则     |
+| 报告解析     | 用户提供 Nmap/Nessus 报告     | 转为管理层可读摘要           |
+| 安全问答/RAG | 用户提问                     | 基于知识库的安全领域问答     |
+
+#### 使用示例
+
+在 OpenClaw 接入的 Telegram、Discord 等渠道中，用户可直接用自然语言触发：
+
+- 「分析 IP 8.8.8.8 的威胁情报」
+- 「这封邮件是钓鱼吗：[粘贴邮件内容]」
+- 「审计这段 Python 代码的安全问题」
+- 「生成一个检测 Cobalt Strike 的 YARA 规则」
+- 「把这段 Nmap 报告翻译成管理层能懂的摘要」
+- 「根据知识库回答：什么是 XSS？」
+
+#### 故障排查
+
+| 现象           | 可能原因                         |
+|----------------|----------------------------------|
+| 401 Unauthorized | Skill Key 与后端 `.env` 不一致   |
+| 连接失败       | `SEC_LLM_BASE_URL` 错误或 Sec-LLM 未启动 |
+| Skill 无反应   | 未刷新/重启，Skill 未加载       |
+
+更多说明见 [openclaw-skill/README.md](openclaw-skill/README.md)。
 
 ---
 
@@ -204,6 +290,9 @@ sec-llm-local/
 │   │   ├── threat-intel-agent/  # 威胁情报自动化研判（独立一级功能）
 │   │   └── report-generation/   # 报告导出（聚合日志/对话/情报）
 │   └── lib/         # API 客户端
+├── openclaw-skill/   # OpenClaw Skill 集成
+│   ├── sec-llm/     # Skill 定义与辅助脚本
+│   └── README.md
 └── README.md
 ```
 
