@@ -1,5 +1,14 @@
 /** Agent API client for the Sec-LLM Agent platform. */
 
+export interface AgentSession {
+  id: string;
+  status: string;
+  task_type: string;
+  target: string;
+  created_at: string;
+  findings_count: number;
+}
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 function authHeaders(): Record<string, string> {

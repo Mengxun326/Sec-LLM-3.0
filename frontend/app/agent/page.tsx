@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Shield, Activity } from "lucide-react";
 import AgentTaskPanel from "@/components/AgentTaskPanel";
 import AgentLogStream from "@/components/AgentLogStream";
-import { getAgentReport, listAgentSessions, type AgentSession } from "@/lib/agent-api";
+import { getAgentReport, listAgentSessions } from "@/lib/agent-api";
 
 export default function AgentPage() {
   const router = useRouter();
