@@ -62,7 +62,12 @@ settings = Settings()
 
 def normalize_provider(provider: Optional[str]) -> str:
     p = (provider or "").strip().lower()
-    return p if p in {"local", "cloud"} else "local"
+    if p not in {"local", "cloud"}:
+        if p:
+            import logging
+            logging.warning(f"Unknown LLM provider '{provider}', falling back to 'local'")
+        return "local"
+    return p
 
 
 def get_user_provider(current_user: Optional[dict]) -> str:

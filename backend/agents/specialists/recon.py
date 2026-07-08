@@ -47,9 +47,12 @@ async def run_recon(target: str, provider: str, blackboard: Blackboard) -> Dict[
     except Exception as e:
         findings.append({"type": "error", "tool": "browser_navigate", "error": str(e)})
 
-    # Step 2: Port scan via shell
+    # Step 2: Port scan via shell (extract hostname if target is a URL)
     try:
-        result = await invoke_tool("shell_exec", command=f"nmap -sV -F {target}", timeout=120)
+        from urllib.parse import urlparse
+        parsed = urlparse(target)
+        scan_target = parsed.hostname or target  # use hostname if URL, else raw target
+        result = await invoke_tool("shell_exec", command=f"nmap -sV -F {scan_target}", timeout=120)
         if isinstance(result, dict) and result.get("exit_code") == 0:
             blackboard.publish("nmap_output", result.get("stdout", ""), "recon")
             findings.append({"type": "port_scan", "output": result.get("stdout", "")[:2000]})

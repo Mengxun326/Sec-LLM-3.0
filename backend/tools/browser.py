@@ -74,18 +74,24 @@ async def browser_check_xss(url: str, param: str) -> dict:
         for payload in payloads:
             try:
                 test_url = f"{url}?{param}={payload}"
+                # Register dialog handler BEFORE goto so it catches alert() from XSS
+                dialog_triggered = False
+                async def handle_dialog(dialog):
+                    nonlocal dialog_triggered
+                    dialog_triggered = True
+                    await dialog.dismiss()
+                page.on("dialog", handle_dialog)
+
                 await page.goto(test_url, timeout=15000, wait_until="domcontentloaded")
                 content = await page.content()
 
-                # Check if payload appears unescaped
-                is_vulnerable = payload in content
-                # Also check for dialog (real XSS trigger)
-                dialog_triggered = False
-                page.on("dialog", lambda d: None)
+                # Check if payload appears unescaped OR dialog was triggered
+                is_vulnerable = payload in content or dialog_triggered
 
                 results.append({
                     "payload": payload,
                     "vulnerable": is_vulnerable,
+                    "dialog_triggered": dialog_triggered,
                     "url": test_url,
                 })
             except Exception:

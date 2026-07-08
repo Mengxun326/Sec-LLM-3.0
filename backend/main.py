@@ -34,67 +34,8 @@ import pymysql
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 
-# ================= ⚙️ 配置管理系统 =================
-class Settings(BaseSettings):
-    # 基础配置
-    ENV_MODE: str = "dev"
-    JWT_SECRET_KEY: str = "default-unsafe-secret-key"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
-
-    # LLM 核心配置
-    LLM_PROVIDER: str = "local"  # local 或 cloud
-
-    # 云端 DeepSeek 配置
-    DEEPSEEK_API_KEY: Optional[str] = None
-    DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
-    DEEPSEEK_MODEL_NAME: str = "deepseek-chat"
-    ABUSEIPDB_API_KEY: Optional[str] = None
-    OTX_API_KEY: Optional[str] = None
-    THREAT_INTEL_TIMEOUT_SECONDS: float = 4.0
-
-    # 本地 Ollama 配置
-    OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
-    OLLAMA_MODEL_NAME: str = "llama3:8b"
-    RAG_ONLY_MAX_DISTANCE: float = 1.2
-
-    # 数据库配置
-    DATABASE_TYPE: str = "mysql"  # 选项: sqlite, mysql
-
-    # MySQL 配置 (可选)
-    MYSQL_USER: str = "root"
-    MYSQL_PASSWORD: str = ""
-    MYSQL_HOST: str = "localhost"
-    MYSQL_PORT: int = 3306
-    MYSQL_DB: str = "sec_llm_db"
-
-    # 邮件配置（未配置时邮箱验证相关接口会返回明确错误）
-    MAIL_USERNAME: Optional[str] = None
-    MAIL_PASSWORD: Optional[str] = None
-    MAIL_FROM: Optional[EmailStr] = None
-    MAIL_PORT: int = 587
-    MAIL_SERVER: Optional[str] = None
-    MAIL_FROM_NAME: str = "Sec-LLM Security Team"
-    DOMAIN_URL: str = "http://localhost:3000"
-
-    # OpenClaw Skill 集成：API Key 认证（可选，配置后允许 X-Skill-Api-Key 调用）
-    SEC_LLM_SKILL_API_KEY: Optional[str] = None
-
-    class Config:
-        env_file = ".env"
-
-
-settings = Settings()
-
-
-def normalize_provider(provider: Optional[str]) -> str:
-    p = (provider or "").strip().lower()
-    return p if p in {"local", "cloud"} else "local"
-
-
-def get_user_provider(current_user: Optional[Dict[str, Any]]) -> str:
-    if current_user and current_user.get("llm_provider"):
-        return normalize_provider(current_user.get("llm_provider"))
-    return normalize_provider(settings.LLM_PROVIDER)
+# ================= ⚙️ 配置管理系统 (from config.py) =================
+from config import settings, normalize_provider, get_user_provider
 
 
 def _mail_config_ready() -> bool:
@@ -121,12 +62,15 @@ if _mail_config_ready():
         VALIDATE_CERTS=True,
     )
 
-# JWT 配置使用 Settings
-SECRET_KEY = settings.JWT_SECRET_KEY
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES
-
-# ================= 数据库配置 (MySQL 直连) =================
+# ================= 认证模块 (from core.auth) =================
+from core.auth.password import verify_password, get_password_hash
+from core.auth.jwt import create_access_token, get_current_user, oauth2_scheme
+from core.auth.dependencies import (
+    get_current_active_user,
+    get_current_admin_user,
+    get_current_user_or_skill,
+    get_db,
+)
 
 def get_db_connection():
     return pymysql.connect(
@@ -282,6 +226,47 @@ def init_db():
                 cursor.execute("ALTER TABLE knowledge_files ADD COLUMN user_id INT")
                 cursor.execute("CREATE INDEX idx_knowledge_files_user_id ON knowledge_files(user_id)")
 
+            # --- Agent 平台新表 ---
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_sessions (
+                    id VARCHAR(8) PRIMARY KEY,
+                    user_id INT,
+                    target VARCHAR(500) NOT NULL,
+                    task_type VARCHAR(50) DEFAULT 'web_scan',
+                    provider VARCHAR(20) DEFAULT 'local',
+                    status VARCHAR(20) DEFAULT 'running',
+                    phase VARCHAR(50) NULL,
+                    findings_count INT DEFAULT 0,
+                    steps_completed INT DEFAULT 0,
+                    steps_total INT DEFAULT 0,
+                    report TEXT NULL,
+                    logs JSON NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_findings (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    session_id VARCHAR(8) NOT NULL,
+                    title VARCHAR(500) NOT NULL,
+                    severity VARCHAR(20) NOT NULL,
+                    description TEXT NULL,
+                    evidence JSON NULL,
+                    cve_id VARCHAR(50) NULL,
+                    cvss_score INT NULL,
+                    file_path VARCHAR(500) NULL,
+                    line_number INT NULL,
+                    fixed_code TEXT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (session_id) REFERENCES agent_sessions(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """
+            )
+
             # 兼容历史数据：旧数据默认归属 admin，避免升级后"全丢失"
             cursor.execute("SELECT id FROM users WHERE username=%s LIMIT 1", ("admin",))
             admin_row = cursor.fetchone()
@@ -289,113 +274,6 @@ def init_db():
                 admin_id = admin_row["id"]
                 cursor.execute("UPDATE log_records SET user_id=%s WHERE user_id IS NULL", (admin_id,))
                 cursor.execute("UPDATE knowledge_files SET user_id=%s WHERE user_id IS NULL", (admin_id,))
-
-
-# ================= 密码加密工具 =================
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """验证密码"""
-    return pwd_context.verify(plain_password, hashed_password)
-
-def get_password_hash(password: str) -> str:
-    """生成密码哈希"""
-    return pwd_context.hash(password)
-
-# ================= JWT Token 工具 =================
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    """创建 JWT Token"""
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.now(timezone.utc) + expires_delta
-    else:
-        expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
-# ================= 数据库依赖 =================
-def get_db():
-    """获取数据库连接"""
-    conn = get_db_connection()
-    try:
-        yield conn
-    finally:
-        conn.close()
-
-# ================= OAuth2 配置 =================
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/login", auto_error=False)
-
-async def get_current_user(token: str = Depends(oauth2_scheme), db=Depends(get_db)) -> Optional[Dict[str, Any]]:
-    """从 Token 获取当前用户"""
-    if not token:
-        return None
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            return None
-    except JWTError:
-        return None
-    
-    with db.cursor() as cursor:
-        cursor.execute("SELECT * FROM users WHERE username=%s", (username,))
-        return cursor.fetchone()
-
-async def get_current_active_user(current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
-    """获取当前活跃用户（必须登录）"""
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="未登录或 Token 已过期",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return current_user
-
-
-async def get_current_user_or_skill(
-    request: Request,
-    token: Optional[str] = Depends(oauth2_scheme),
-    db=Depends(get_db),
-) -> Dict[str, Any]:
-    """支持 JWT 或 OpenClaw Skill API Key 认证。Skill Key 有效时以 admin 身份调用。"""
-    # 1. 优先检查 Skill API Key（用于 OpenClaw 等外部调用）
-    skill_key = request.headers.get("X-Skill-Api-Key")
-    if (
-        settings.SEC_LLM_SKILL_API_KEY
-        and skill_key
-        and secrets.compare_digest(skill_key, settings.SEC_LLM_SKILL_API_KEY)
-    ):
-        with db.cursor() as cursor:
-            cursor.execute("SELECT * FROM users WHERE username=%s", ("admin",))
-            admin_user = cursor.fetchone()
-        if admin_user:
-            print(f"[AUTH] Skill API Key authenticated as admin (user_id={admin_user['id']})")
-            return admin_user
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Skill API Key 已配置但系统管理员账户不存在，请联系管理员初始化数据库",
-            )
-    # 2. 回退到 JWT 认证
-    user = await get_current_user(token, db)
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="未登录、Token 已过期或 Skill API Key 无效",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return user
-
-
-async def get_current_admin_user(current_user: Dict[str, Any] = Depends(get_current_active_user)) -> Dict[str, Any]:
-    """获取当前管理员用户（必须登录且角色为 admin）"""
-    if current_user.get("role") != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="需要管理员权限",
-        )
-    return current_user
 
 
 # ================= 初始化默认管理员账户 =================
@@ -1188,35 +1066,7 @@ def manual_cleanup_temp(_current_admin: Dict[str, Any] = Depends(get_current_adm
     }
 
 # --- 辅助函数：AI 日志分析 ---
-def extract_json_from_text(text: str):
-    """
-    从 LLM 的回复中提取 JSON 部分，处理 Markdown 代码块
-    """
-    try:
-        # 1. 尝试直接解析
-        return json.loads(text)
-    except Exception:
-        pass
-
-    # 2. 尝试提取 ```json ... ``` 之间的内容
-    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group(1))
-        except Exception:
-            pass
-
-    # 3. 使用 JSONDecoder.raw_decode() 精确提取第一个合法 JSON 对象
-    for idx, ch in enumerate(text):
-        if ch == '{':
-            try:
-                decoder = json.JSONDecoder()
-                obj, _ = decoder.raw_decode(text[idx:])
-                return obj
-            except json.JSONDecodeError:
-                continue
-
-    return None
+from tools.registry import _extract_json as extract_json_from_text
 
 
 def _build_log_analysis_prompts(log_content: str):

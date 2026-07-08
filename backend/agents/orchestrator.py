@@ -46,6 +46,38 @@ def _cleanup_expired_sessions():
         print(f"[Sessions] Cleaned up {len(expired)} expired sessions")
 
 
+def _persist_session(session_id: str):
+    """Write session to MySQL agent_sessions table (best-effort, non-blocking)."""
+    try:
+        import pymysql
+        from config import settings
+        conn = pymysql.connect(
+            host=settings.MYSQL_HOST, user=settings.MYSQL_USER, password=settings.MYSQL_PASSWORD,
+            database=settings.MYSQL_DB, port=settings.MYSQL_PORT, charset="utf8mb4",
+            cursorclass=pymysql.cursors.DictCursor, autocommit=True,
+        )
+        s = _sessions.get(session_id)
+        if not s: return
+        state = s.get("state") or {}
+        with conn.cursor() as c:
+            c.execute(
+                """INSERT INTO agent_sessions (id, target, task_type, provider, status, phase,
+                   findings_count, steps_completed, steps_total, report, logs, created_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   ON DUPLICATE KEY UPDATE status=%s, phase=%s, findings_count=%s,
+                   steps_completed=%s, steps_total=%s, report=%s, logs=%s""",
+                (session_id, s["task"].get("target",""), s["task"].get("task_type","web_scan"),
+                 s["task"].get("provider","local"), s["status"], state.get("phase",""),
+                 len(s.get("findings",[])), state.get("current_step",0),
+                 len(state.get("plan",[])), s.get("report"), json.dumps(s.get("logs",[])),
+                 s.get("created_at",""), s["status"], state.get("phase",""),
+                 len(s.get("findings",[])), state.get("current_step",0),
+                 len(state.get("plan",[])), s.get("report"), json.dumps(s.get("logs",[]))))
+        conn.close()
+    except Exception as e:
+        print(f"[DB Persist] Failed to save session {session_id}: {e}")
+
+
 async def create_session(task: AgentTask) -> str:
     session_id = str(uuid.uuid4())[:8]
     async with _sessions_lock:
@@ -97,7 +129,7 @@ async def planner_node(state: AgentState) -> AgentState:
 
     try:
         raw = await single_shot_completion(
-            messages, provider=state.get("provider", "local"), temperature=0.1, json_mode=True
+            messages, provider=state.get("provider", "local"), temperature=0.1, json_mode=False
         )
         start = raw.find("[")
         end = raw.rfind("]") + 1
@@ -304,4 +336,6 @@ async def run_agent(task: AgentTask) -> str:
             _sessions[session_id]["status"] = "failed"
             _sessions[session_id]["logs"].append(f"[FATAL] {e}")
 
+    # Persist to DB (best-effort, non-blocking)
+    _persist_session(session_id)
     return session_id
