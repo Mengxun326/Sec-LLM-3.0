@@ -64,7 +64,7 @@ if _mail_config_ready():
 
 # ================= 认证模块 (from core.auth) =================
 from core.auth.password import verify_password, get_password_hash
-from core.auth.jwt import create_access_token, get_current_user, oauth2_scheme
+from core.auth.jwt import create_access_token, get_current_user, oauth2_scheme, SECRET_KEY, ALGORITHM
 from core.auth.dependencies import (
     get_current_active_user,
     get_current_admin_user,
@@ -257,7 +257,7 @@ def init_db():
                     description TEXT NULL,
                     evidence JSON NULL,
                     cve_id VARCHAR(50) NULL,
-                    cvss_score INT NULL,
+                    cvss_score DECIMAL(3,1) NULL,
                     file_path VARCHAR(500) NULL,
                     line_number INT NULL,
                     fixed_code TEXT NULL,

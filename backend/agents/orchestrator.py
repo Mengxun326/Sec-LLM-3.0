@@ -48,6 +48,7 @@ def _cleanup_expired_sessions():
 
 def _persist_session(session_id: str):
     """Write session to MySQL agent_sessions table (best-effort, non-blocking)."""
+    conn = None
     try:
         import pymysql
         from config import settings
@@ -73,9 +74,14 @@ def _persist_session(session_id: str):
                  s.get("created_at",""), s["status"], state.get("phase",""),
                  len(s.get("findings",[])), state.get("current_step",0),
                  len(state.get("plan",[])), s.get("report"), json.dumps(s.get("logs",[]))))
-        conn.close()
     except Exception as e:
         print(f"[DB Persist] Failed to save session {session_id}: {e}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 async def create_session(task: AgentTask) -> str:
@@ -336,6 +342,6 @@ async def run_agent(task: AgentTask) -> str:
             _sessions[session_id]["status"] = "failed"
             _sessions[session_id]["logs"].append(f"[FATAL] {e}")
 
-    # Persist to DB (best-effort, non-blocking)
-    _persist_session(session_id)
+    # Persist to DB asynchronously (best-effort, non-blocking)
+    asyncio.create_task(asyncio.to_thread(_persist_session, session_id))
     return session_id

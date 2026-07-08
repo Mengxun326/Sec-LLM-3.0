@@ -27,6 +27,14 @@ class TestAgentGraph:
 
 
 class TestSessionManagement:
+    def setup_method(self):
+        import agents.orchestrator as orch
+        orch._sessions.clear()
+
+    def teardown_method(self):
+        import agents.orchestrator as orch
+        orch._sessions.clear()
+
     def test_create_and_get(self):
         async def run():
             sid = await create_session({"target": "test.com", "task_type": "web_scan"})

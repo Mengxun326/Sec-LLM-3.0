@@ -1,4 +1,5 @@
 """CVSS 3.1 calculator and OWASP classifier for agent findings."""
+import math
 
 # OWASP Top 10 (2021) mapping by keyword
 OWASP_CATEGORIES = {
@@ -57,7 +58,8 @@ def calculate_cvss(
     if scope == "U":
         impact = 6.42 * iss
     else:
-        impact = 7.52 * (iss - 0.029) - 3.25 * (iss - 0.02) ** 15
+        # CVSS v3.1 formula
+        impact = 7.52 * (iss - 0.029) - 3.25 * (iss * 0.9731 - 0.02) ** 13
 
     # Exploitability sub-score
     e = 8.22 * av.get(attack_vector, 0.85) * ac.get(attack_complexity, 0.77)
@@ -67,14 +69,14 @@ def calculate_cvss(
         e *= pr_c.get(privileges_required, 0.85)
     e *= ui.get(user_interaction, 0.85)
 
-    # Base score
-    if impact <= 0:
-        score = 0
+    # Base score with RoundUp per CVSS 3.1 spec (ceiling to 1 decimal)
+    if impact < 1e-9:
+        score = 0.0
     elif scope == "U":
-        score = min(10, round((impact + e) * 1.0, 1))
+        score = math.ceil((impact + e) * 10) / 10
     else:
-        score = min(10, round((impact + e) * 1.08, 1))
-    score = max(0, min(10, score))  # ensure 0.0-10.0
+        score = math.ceil((impact + e) * 1.08 * 10) / 10
+    score = max(0.0, min(10.0, score))
 
     if score >= 9.0: severity = "Critical"
     elif score >= 7.0: severity = "High"
