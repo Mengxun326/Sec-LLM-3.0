@@ -422,7 +422,20 @@ def init_default_admin():
                 print("[OK] 管理员账户已存在")
 
 
-app = FastAPI(title="Sec-LLM RAG Backend", version="3.1")
+app = FastAPI(title="Sec-LLM Agent Platform", version="4.0")
+
+# --- Agent API routes ---
+from api.agent import router as agent_router
+app.include_router(agent_router)
+
+# --- Import tools to auto-register with the tool registry ---
+import tools.phishing      # noqa: E402
+import tools.code_audit    # noqa: E402
+import tools.rule_gen      # noqa: E402
+import tools.report        # noqa: E402
+import tools.threat_intel  # noqa: E402
+import tools.browser       # noqa: E402
+import tools.shell         # noqa: E402
 
 # 配置 CORS
 app.add_middleware(
@@ -655,7 +668,7 @@ async def send_verification_email_safe(email: str, token: str):
 # --- 接口 1: 健康检查 ---
 @app.get("/")
 def health_check():
-    return {"status": "online", "system": "Sec-LLM V3.1", "provider": settings.LLM_PROVIDER}
+    return {"status": "online", "system": "Sec-LLM Agent Platform v4.0", "provider": settings.LLM_PROVIDER}
 
 # --- 接口 2: 用户注册 ---
 @app.post("/api/register")
