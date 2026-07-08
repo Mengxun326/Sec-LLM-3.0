@@ -13,10 +13,8 @@ os.environ['no_proxy'] = 'localhost,127.0.0.1'
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, status, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, EmailStr
-from pydantic_settings import BaseSettings
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_chroma import Chroma
@@ -31,7 +29,6 @@ from openai import OpenAI  # 引入 OpenAI 库
 
 # ================= 数据库 & 认证相关导入 =================
 import pymysql
-from passlib.context import CryptContext
 from jose import JWTError, jwt
 
 # ================= ⚙️ 配置管理系统 (from config.py) =================
@@ -1097,112 +1094,29 @@ def _build_log_analysis_prompts(log_content: str):
     return system_prompt, user_prompt
 
 
-def _local_llm_analysis(log_content: str):
-    system_prompt, user_prompt = _build_log_analysis_prompts(log_content)
-    url = f"{settings.OLLAMA_BASE_URL}/api/chat"
-    payload = {
-        "model": settings.OLLAMA_MODEL_NAME,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "stream": False,
-        "format": "json",
-        "options": {
-            "temperature": 0.1,
-            "num_ctx": 4096
-        }
-    }
-    resp = requests.post(url, json=payload, proxies={"http": None, "https": None}, timeout=60)
-    resp.raise_for_status()
-    ai_text = resp.json()["message"]["content"]
-    print("[AI-Local] Raw Response:", ai_text[:50] + "..." if len(ai_text) > 50 else ai_text)
-    result = extract_json_from_text(ai_text)
-    if result is None:
-        return {
-            "summary": "AI 输出未能解析为 JSON",
-            "threat_level": "Unknown",
-            "details": [],
-            "advice": "请检查模型输出格式，或切换为云端模型"
-        }
-    return result
 
-
-def _cloud_llm_analysis(log_content: str):
-    if not settings.DEEPSEEK_API_KEY or deepseek_client is None:
-        return {
-            "summary": "DeepSeek API Key 未配置或客户端未初始化",
-            "threat_level": "Unknown",
-            "details": [],
-            "advice": "请在 backend/.env 中设置 DEEPSEEK_API_KEY"
-        }
-    system_prompt, user_prompt = _build_log_analysis_prompts(log_content)
-    response = deepseek_client.chat.completions.create(
-        model="deepseek-chat",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.1,
-        response_format={"type": "json_object"}
-    )
-    ai_text = response.choices[0].message.content
-    print("[AI-Cloud] Raw Response:", ai_text[:50] + "..." if len(ai_text) > 50 else ai_text)
-    result = extract_json_from_text(ai_text)
-    if result is None:
-        return {
-            "summary": "AI 输出未能解析为 JSON",
-            "threat_level": "Unknown",
-            "details": [],
-            "advice": "请检查模型输出格式，或切换为本地模型"
-        }
-    return result
+def _single_shot_completion(messages: List[Dict[str, str]], provider: str) -> str:
+    """Delegate to core.llm.router for unified provider dispatch."""
+    import asyncio
+    from core.llm.router import single_shot_completion
+    return asyncio.run(single_shot_completion(messages, provider=provider, temperature=0.2, json_mode=True))
 
 
 def real_llm_analysis(log_content: str, provider: Optional[str] = None):
-    """
-    统一入口：根据配置决定是调用 本地 Ollama 还是 云端 DeepSeek
-    """
+    """Delegate to core.llm.router for log analysis."""
     selected_provider = normalize_provider(provider or settings.LLM_PROVIDER)
     print(f"[ANALYSIS] 开始日志分析 (Provider: {selected_provider})...")
     try:
-        if selected_provider == "cloud":
-            return _cloud_llm_analysis(log_content)
-        return _local_llm_analysis(log_content)
+        system_prompt, user_prompt = _build_log_analysis_prompts(log_content)
+        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+        raw = _single_shot_completion(messages, selected_provider)
+        result = extract_json_from_text(raw)
+        if result is None:
+            return {"summary": "AI 输出未能解析为 JSON", "threat_level": "Unknown", "details": [], "advice": "请检查模型输出格式"}
+        return result
     except Exception as e:
         print(f"[ERROR] AI 调用出错: {e}")
-        return {
-            "summary": f"分析服务异常: {str(e)}",
-            "threat_level": "Unknown",
-            "details": [],
-            "advice": "请检查后台日志或显存状态。"
-        }
-
-
-def _single_shot_completion(messages: List[Dict[str, str]], provider: str) -> str:
-    """统一单次非流式补全，用于工具类结构化输出。"""
-    selected_provider = normalize_provider(provider)
-    if selected_provider == "cloud":
-        if not settings.DEEPSEEK_API_KEY or deepseek_client is None:
-            raise RuntimeError("云端引擎未配置")
-        response = deepseek_client.chat.completions.create(
-            model=settings.DEEPSEEK_MODEL_NAME,
-            messages=messages,
-            temperature=0.2,
-            response_format={"type": "json_object"},
-        )
-        return response.choices[0].message.content or ""
-
-    payload = {
-        "model": settings.OLLAMA_MODEL_NAME,
-        "messages": messages,
-        "stream": False,
-        "format": "json",
-        "options": {"temperature": 0.2, "num_ctx": 4096},
-    }
-    resp = requests.post(f"{settings.OLLAMA_BASE_URL}/api/chat", json=payload, timeout=60)
-    resp.raise_for_status()
-    return resp.json().get("message", {}).get("content", "")
+        return {"summary": f"分析服务异常: {str(e)}", "threat_level": "Unknown", "details": [], "advice": "请检查后台日志或显存状态。"}
 
 
 IOC_IPV4_RE = re.compile(r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$")
@@ -2039,105 +1953,7 @@ def delete_knowledge_file(
         raise HTTPException(status_code=500, detail=str(e))
 
 # ================= 🧠 RAG 核心组件：查询重写 =================
-async def rewrite_query(user_msg: str, history: List[Dict[str, str]], provider: str = "local"):
-    """
-    Based on conversation history, rewrite the user's follow-up question
-    into a standalone search query. Routes through the user's active LLM provider.
-    """
-    if not history:
-        return user_msg
-
-    print(f"[Rewriting] Original: {user_msg} | provider={provider}")
-
-    history_text = ""
-    for msg in history[-4:]:
-        role = "User" if msg["role"] == "user" else "Assistant"
-        history_text += f"{role}: {msg['content']}\n"
-
-    system_prompt = (
-        "You are a search query optimization expert. "
-        "Your task: based on [Conversation History], rewrite the user's [Current Question] "
-        "into a semantically complete, standalone search query.\n\n"
-        "Rules:\n"
-        "1. Replace pronouns (e.g., 'it', 'this') with specific nouns.\n"
-        "2. Fill in omitted context (e.g., subject).\n"
-        "3. Keep the original meaning unchanged.\n"
-        "4. Output ONLY the rewritten sentence, no explanations, no quotes, no prefixes.\n"
-        "5. If the current question is already standalone (e.g., 'hello', 'who are you'), output it as-is."
-    )
-
-    user_prompt = (
-        f"[Conversation History]:\n{history_text}\n\n"
-        f"[Current Question]: {user_msg}\n\n"
-        "[Rewritten Result]:"
-    )
-
-    selected = normalize_provider(provider)
-    try:
-        if selected == "cloud":
-            if not settings.DEEPSEEK_API_KEY or deepseek_client is None:
-                print("[Rewriting] Cloud not available, falling back to original query")
-                return user_msg
-            response = deepseek_client.chat.completions.create(
-                model=settings.DEEPSEEK_MODEL_NAME,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.1,
-                max_tokens=200,
-            )
-            new_query = response.choices[0].message.content.strip()
-            print(f"[Rewriting] Result: {new_query}")
-            return new_query
-        else:
-            url = f"{settings.OLLAMA_BASE_URL}/api/chat"
-            payload = {
-                "model": settings.OLLAMA_MODEL_NAME,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "stream": False,
-                "options": {"temperature": 0.1}
-            }
-
-            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
-                resp = await client.post(url, json=payload)
-                if resp.status_code == 200:
-                    new_query = resp.json()["message"]["content"].strip()
-                    print(f"[Rewriting] Result: {new_query}")
-                    return new_query
-    except Exception as e:
-        print(f"[Rewriting Error] {e}")
-
-    return user_msg
-
-
-def _extract_query_keywords(text: str) -> List[str]:
-    """提取查询关键词（英文词 + 2字及以上中文片段）"""
-    if not text:
-        return []
-    parts = re.findall(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]{2,}", text.lower())
-    # 去重并过滤过短噪声
-    dedup = []
-    seen = set()
-    for p in parts:
-        if len(p) < 2:
-            continue
-        if p not in seen:
-            seen.add(p)
-            dedup.append(p)
-    return dedup
-
-
-def _query_matches_context(query: str, context: str) -> bool:
-    """仅RAG模式下，要求问题关键词至少命中上下文一次"""
-    keywords = _extract_query_keywords(query)
-    if not keywords:
-        return False
-    ctx = (context or "").lower()
-    return any(k in ctx for k in keywords)
+from core.rag.rewrite import rewrite_query, extract_query_keywords as _extract_query_keywords, query_matches_context as _query_matches_context
 
 
 def _normalize_chat_role(role: str) -> str:
