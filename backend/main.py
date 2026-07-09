@@ -13,10 +13,8 @@ os.environ['no_proxy'] = 'localhost,127.0.0.1'
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, status, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, EmailStr
-from pydantic_settings import BaseSettings
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_chroma import Chroma
@@ -31,70 +29,10 @@ from openai import OpenAI  # 引入 OpenAI 库
 
 # ================= 数据库 & 认证相关导入 =================
 import pymysql
-from passlib.context import CryptContext
 from jose import JWTError, jwt
 
-# ================= ⚙️ 配置管理系统 =================
-class Settings(BaseSettings):
-    # 基础配置
-    ENV_MODE: str = "dev"
-    JWT_SECRET_KEY: str = "default-unsafe-secret-key"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
-
-    # LLM 核心配置
-    LLM_PROVIDER: str = "local"  # local 或 cloud
-
-    # 云端 DeepSeek 配置
-    DEEPSEEK_API_KEY: Optional[str] = None
-    DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
-    DEEPSEEK_MODEL_NAME: str = "deepseek-chat"
-    ABUSEIPDB_API_KEY: Optional[str] = None
-    OTX_API_KEY: Optional[str] = None
-    THREAT_INTEL_TIMEOUT_SECONDS: float = 4.0
-
-    # 本地 Ollama 配置
-    OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
-    OLLAMA_MODEL_NAME: str = "llama3:8b"
-    RAG_ONLY_MAX_DISTANCE: float = 1.2
-
-    # 数据库配置
-    DATABASE_TYPE: str = "mysql"  # 选项: sqlite, mysql
-
-    # MySQL 配置 (可选)
-    MYSQL_USER: str = "root"
-    MYSQL_PASSWORD: str = ""
-    MYSQL_HOST: str = "localhost"
-    MYSQL_PORT: int = 3306
-    MYSQL_DB: str = "sec_llm_db"
-
-    # 邮件配置（未配置时邮箱验证相关接口会返回明确错误）
-    MAIL_USERNAME: Optional[str] = None
-    MAIL_PASSWORD: Optional[str] = None
-    MAIL_FROM: Optional[EmailStr] = None
-    MAIL_PORT: int = 587
-    MAIL_SERVER: Optional[str] = None
-    MAIL_FROM_NAME: str = "Sec-LLM Security Team"
-    DOMAIN_URL: str = "http://localhost:3000"
-
-    # OpenClaw Skill 集成：API Key 认证（可选，配置后允许 X-Skill-Api-Key 调用）
-    SEC_LLM_SKILL_API_KEY: Optional[str] = None
-
-    class Config:
-        env_file = ".env"
-
-
-settings = Settings()
-
-
-def normalize_provider(provider: Optional[str]) -> str:
-    p = (provider or "").strip().lower()
-    return p if p in {"local", "cloud"} else "local"
-
-
-def get_user_provider(current_user: Optional[Dict[str, Any]]) -> str:
-    if current_user and current_user.get("llm_provider"):
-        return normalize_provider(current_user.get("llm_provider"))
-    return normalize_provider(settings.LLM_PROVIDER)
+# ================= ⚙️ 配置管理系统 (from config.py) =================
+from config import settings, normalize_provider, get_user_provider
 
 
 def _mail_config_ready() -> bool:
@@ -121,12 +59,15 @@ if _mail_config_ready():
         VALIDATE_CERTS=True,
     )
 
-# JWT 配置使用 Settings
-SECRET_KEY = settings.JWT_SECRET_KEY
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES
-
-# ================= 数据库配置 (MySQL 直连) =================
+# ================= 认证模块 (from core.auth) =================
+from core.auth.password import verify_password, get_password_hash
+from core.auth.jwt import create_access_token, get_current_user, oauth2_scheme, SECRET_KEY, ALGORITHM
+from core.auth.dependencies import (
+    get_current_active_user,
+    get_current_admin_user,
+    get_current_user_or_skill,
+    get_db,
+)
 
 def get_db_connection():
     return pymysql.connect(
@@ -282,6 +223,47 @@ def init_db():
                 cursor.execute("ALTER TABLE knowledge_files ADD COLUMN user_id INT")
                 cursor.execute("CREATE INDEX idx_knowledge_files_user_id ON knowledge_files(user_id)")
 
+            # --- Agent 平台新表 ---
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_sessions (
+                    id VARCHAR(8) PRIMARY KEY,
+                    user_id INT,
+                    target VARCHAR(500) NOT NULL,
+                    task_type VARCHAR(50) DEFAULT 'web_scan',
+                    provider VARCHAR(20) DEFAULT 'local',
+                    status VARCHAR(20) DEFAULT 'running',
+                    phase VARCHAR(50) NULL,
+                    findings_count INT DEFAULT 0,
+                    steps_completed INT DEFAULT 0,
+                    steps_total INT DEFAULT 0,
+                    report TEXT NULL,
+                    logs JSON NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_findings (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    session_id VARCHAR(8) NOT NULL,
+                    title VARCHAR(500) NOT NULL,
+                    severity VARCHAR(20) NOT NULL,
+                    description TEXT NULL,
+                    evidence JSON NULL,
+                    cve_id VARCHAR(50) NULL,
+                    cvss_score DECIMAL(3,1) NULL,
+                    file_path VARCHAR(500) NULL,
+                    line_number INT NULL,
+                    fixed_code TEXT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (session_id) REFERENCES agent_sessions(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """
+            )
+
             # 兼容历史数据：旧数据默认归属 admin，避免升级后"全丢失"
             cursor.execute("SELECT id FROM users WHERE username=%s LIMIT 1", ("admin",))
             admin_row = cursor.fetchone()
@@ -289,113 +271,6 @@ def init_db():
                 admin_id = admin_row["id"]
                 cursor.execute("UPDATE log_records SET user_id=%s WHERE user_id IS NULL", (admin_id,))
                 cursor.execute("UPDATE knowledge_files SET user_id=%s WHERE user_id IS NULL", (admin_id,))
-
-
-# ================= 密码加密工具 =================
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """验证密码"""
-    return pwd_context.verify(plain_password, hashed_password)
-
-def get_password_hash(password: str) -> str:
-    """生成密码哈希"""
-    return pwd_context.hash(password)
-
-# ================= JWT Token 工具 =================
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    """创建 JWT Token"""
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.now(timezone.utc) + expires_delta
-    else:
-        expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
-# ================= 数据库依赖 =================
-def get_db():
-    """获取数据库连接"""
-    conn = get_db_connection()
-    try:
-        yield conn
-    finally:
-        conn.close()
-
-# ================= OAuth2 配置 =================
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/login", auto_error=False)
-
-async def get_current_user(token: str = Depends(oauth2_scheme), db=Depends(get_db)) -> Optional[Dict[str, Any]]:
-    """从 Token 获取当前用户"""
-    if not token:
-        return None
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            return None
-    except JWTError:
-        return None
-    
-    with db.cursor() as cursor:
-        cursor.execute("SELECT * FROM users WHERE username=%s", (username,))
-        return cursor.fetchone()
-
-async def get_current_active_user(current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
-    """获取当前活跃用户（必须登录）"""
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="未登录或 Token 已过期",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return current_user
-
-
-async def get_current_user_or_skill(
-    request: Request,
-    token: Optional[str] = Depends(oauth2_scheme),
-    db=Depends(get_db),
-) -> Dict[str, Any]:
-    """支持 JWT 或 OpenClaw Skill API Key 认证。Skill Key 有效时以 admin 身份调用。"""
-    # 1. 优先检查 Skill API Key（用于 OpenClaw 等外部调用）
-    skill_key = request.headers.get("X-Skill-Api-Key")
-    if (
-        settings.SEC_LLM_SKILL_API_KEY
-        and skill_key
-        and secrets.compare_digest(skill_key, settings.SEC_LLM_SKILL_API_KEY)
-    ):
-        with db.cursor() as cursor:
-            cursor.execute("SELECT * FROM users WHERE username=%s", ("admin",))
-            admin_user = cursor.fetchone()
-        if admin_user:
-            print(f"[AUTH] Skill API Key authenticated as admin (user_id={admin_user['id']})")
-            return admin_user
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Skill API Key 已配置但系统管理员账户不存在，请联系管理员初始化数据库",
-            )
-    # 2. 回退到 JWT 认证
-    user = await get_current_user(token, db)
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="未登录、Token 已过期或 Skill API Key 无效",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return user
-
-
-async def get_current_admin_user(current_user: Dict[str, Any] = Depends(get_current_active_user)) -> Dict[str, Any]:
-    """获取当前管理员用户（必须登录且角色为 admin）"""
-    if current_user.get("role") != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="需要管理员权限",
-        )
-    return current_user
 
 
 # ================= 初始化默认管理员账户 =================
@@ -422,7 +297,20 @@ def init_default_admin():
                 print("[OK] 管理员账户已存在")
 
 
-app = FastAPI(title="Sec-LLM RAG Backend", version="3.1")
+app = FastAPI(title="Sec-LLM Agent Platform", version="4.0")
+
+# --- Agent API routes ---
+from api.agent import router as agent_router
+app.include_router(agent_router)
+
+# --- Import tools to auto-register with the tool registry ---
+import tools.phishing      # noqa: E402
+import tools.code_audit    # noqa: E402
+import tools.rule_gen      # noqa: E402
+import tools.report        # noqa: E402
+import tools.threat_intel  # noqa: E402
+import tools.browser       # noqa: E402
+import tools.shell         # noqa: E402
 
 # 配置 CORS
 app.add_middleware(
@@ -655,7 +543,7 @@ async def send_verification_email_safe(email: str, token: str):
 # --- 接口 1: 健康检查 ---
 @app.get("/")
 def health_check():
-    return {"status": "online", "system": "Sec-LLM V3.1", "provider": settings.LLM_PROVIDER}
+    return {"status": "online", "system": "Sec-LLM Agent Platform v4.0", "provider": settings.LLM_PROVIDER}
 
 # --- 接口 2: 用户注册 ---
 @app.post("/api/register")
@@ -1175,35 +1063,7 @@ def manual_cleanup_temp(_current_admin: Dict[str, Any] = Depends(get_current_adm
     }
 
 # --- 辅助函数：AI 日志分析 ---
-def extract_json_from_text(text: str):
-    """
-    从 LLM 的回复中提取 JSON 部分，处理 Markdown 代码块
-    """
-    try:
-        # 1. 尝试直接解析
-        return json.loads(text)
-    except Exception:
-        pass
-
-    # 2. 尝试提取 ```json ... ``` 之间的内容
-    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group(1))
-        except Exception:
-            pass
-
-    # 3. 使用 JSONDecoder.raw_decode() 精确提取第一个合法 JSON 对象
-    for idx, ch in enumerate(text):
-        if ch == '{':
-            try:
-                decoder = json.JSONDecoder()
-                obj, _ = decoder.raw_decode(text[idx:])
-                return obj
-            except json.JSONDecodeError:
-                continue
-
-    return None
+from tools.registry import _extract_json as extract_json_from_text
 
 
 def _build_log_analysis_prompts(log_content: str):
@@ -1234,112 +1094,29 @@ def _build_log_analysis_prompts(log_content: str):
     return system_prompt, user_prompt
 
 
-def _local_llm_analysis(log_content: str):
-    system_prompt, user_prompt = _build_log_analysis_prompts(log_content)
-    url = f"{settings.OLLAMA_BASE_URL}/api/chat"
-    payload = {
-        "model": settings.OLLAMA_MODEL_NAME,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "stream": False,
-        "format": "json",
-        "options": {
-            "temperature": 0.1,
-            "num_ctx": 4096
-        }
-    }
-    resp = requests.post(url, json=payload, proxies={"http": None, "https": None}, timeout=60)
-    resp.raise_for_status()
-    ai_text = resp.json()["message"]["content"]
-    print("[AI-Local] Raw Response:", ai_text[:50] + "..." if len(ai_text) > 50 else ai_text)
-    result = extract_json_from_text(ai_text)
-    if result is None:
-        return {
-            "summary": "AI 输出未能解析为 JSON",
-            "threat_level": "Unknown",
-            "details": [],
-            "advice": "请检查模型输出格式，或切换为云端模型"
-        }
-    return result
 
-
-def _cloud_llm_analysis(log_content: str):
-    if not settings.DEEPSEEK_API_KEY or deepseek_client is None:
-        return {
-            "summary": "DeepSeek API Key 未配置或客户端未初始化",
-            "threat_level": "Unknown",
-            "details": [],
-            "advice": "请在 backend/.env 中设置 DEEPSEEK_API_KEY"
-        }
-    system_prompt, user_prompt = _build_log_analysis_prompts(log_content)
-    response = deepseek_client.chat.completions.create(
-        model="deepseek-chat",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.1,
-        response_format={"type": "json_object"}
-    )
-    ai_text = response.choices[0].message.content
-    print("[AI-Cloud] Raw Response:", ai_text[:50] + "..." if len(ai_text) > 50 else ai_text)
-    result = extract_json_from_text(ai_text)
-    if result is None:
-        return {
-            "summary": "AI 输出未能解析为 JSON",
-            "threat_level": "Unknown",
-            "details": [],
-            "advice": "请检查模型输出格式，或切换为本地模型"
-        }
-    return result
+def _single_shot_completion(messages: List[Dict[str, str]], provider: str) -> str:
+    """Delegate to core.llm.router for unified provider dispatch."""
+    import asyncio
+    from core.llm.router import single_shot_completion
+    return asyncio.run(single_shot_completion(messages, provider=provider, temperature=0.2, json_mode=True))
 
 
 def real_llm_analysis(log_content: str, provider: Optional[str] = None):
-    """
-    统一入口：根据配置决定是调用 本地 Ollama 还是 云端 DeepSeek
-    """
+    """Delegate to core.llm.router for log analysis."""
     selected_provider = normalize_provider(provider or settings.LLM_PROVIDER)
     print(f"[ANALYSIS] 开始日志分析 (Provider: {selected_provider})...")
     try:
-        if selected_provider == "cloud":
-            return _cloud_llm_analysis(log_content)
-        return _local_llm_analysis(log_content)
+        system_prompt, user_prompt = _build_log_analysis_prompts(log_content)
+        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+        raw = _single_shot_completion(messages, selected_provider)
+        result = extract_json_from_text(raw)
+        if result is None:
+            return {"summary": "AI 输出未能解析为 JSON", "threat_level": "Unknown", "details": [], "advice": "请检查模型输出格式"}
+        return result
     except Exception as e:
         print(f"[ERROR] AI 调用出错: {e}")
-        return {
-            "summary": f"分析服务异常: {str(e)}",
-            "threat_level": "Unknown",
-            "details": [],
-            "advice": "请检查后台日志或显存状态。"
-        }
-
-
-def _single_shot_completion(messages: List[Dict[str, str]], provider: str) -> str:
-    """统一单次非流式补全，用于工具类结构化输出。"""
-    selected_provider = normalize_provider(provider)
-    if selected_provider == "cloud":
-        if not settings.DEEPSEEK_API_KEY or deepseek_client is None:
-            raise RuntimeError("云端引擎未配置")
-        response = deepseek_client.chat.completions.create(
-            model=settings.DEEPSEEK_MODEL_NAME,
-            messages=messages,
-            temperature=0.2,
-            response_format={"type": "json_object"},
-        )
-        return response.choices[0].message.content or ""
-
-    payload = {
-        "model": settings.OLLAMA_MODEL_NAME,
-        "messages": messages,
-        "stream": False,
-        "format": "json",
-        "options": {"temperature": 0.2, "num_ctx": 4096},
-    }
-    resp = requests.post(f"{settings.OLLAMA_BASE_URL}/api/chat", json=payload, timeout=60)
-    resp.raise_for_status()
-    return resp.json().get("message", {}).get("content", "")
+        return {"summary": f"分析服务异常: {str(e)}", "threat_level": "Unknown", "details": [], "advice": "请检查后台日志或显存状态。"}
 
 
 IOC_IPV4_RE = re.compile(r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$")
@@ -2176,105 +1953,7 @@ def delete_knowledge_file(
         raise HTTPException(status_code=500, detail=str(e))
 
 # ================= 🧠 RAG 核心组件：查询重写 =================
-async def rewrite_query(user_msg: str, history: List[Dict[str, str]], provider: str = "local"):
-    """
-    Based on conversation history, rewrite the user's follow-up question
-    into a standalone search query. Routes through the user's active LLM provider.
-    """
-    if not history:
-        return user_msg
-
-    print(f"[Rewriting] Original: {user_msg} | provider={provider}")
-
-    history_text = ""
-    for msg in history[-4:]:
-        role = "User" if msg["role"] == "user" else "Assistant"
-        history_text += f"{role}: {msg['content']}\n"
-
-    system_prompt = (
-        "You are a search query optimization expert. "
-        "Your task: based on [Conversation History], rewrite the user's [Current Question] "
-        "into a semantically complete, standalone search query.\n\n"
-        "Rules:\n"
-        "1. Replace pronouns (e.g., 'it', 'this') with specific nouns.\n"
-        "2. Fill in omitted context (e.g., subject).\n"
-        "3. Keep the original meaning unchanged.\n"
-        "4. Output ONLY the rewritten sentence, no explanations, no quotes, no prefixes.\n"
-        "5. If the current question is already standalone (e.g., 'hello', 'who are you'), output it as-is."
-    )
-
-    user_prompt = (
-        f"[Conversation History]:\n{history_text}\n\n"
-        f"[Current Question]: {user_msg}\n\n"
-        "[Rewritten Result]:"
-    )
-
-    selected = normalize_provider(provider)
-    try:
-        if selected == "cloud":
-            if not settings.DEEPSEEK_API_KEY or deepseek_client is None:
-                print("[Rewriting] Cloud not available, falling back to original query")
-                return user_msg
-            response = deepseek_client.chat.completions.create(
-                model=settings.DEEPSEEK_MODEL_NAME,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.1,
-                max_tokens=200,
-            )
-            new_query = response.choices[0].message.content.strip()
-            print(f"[Rewriting] Result: {new_query}")
-            return new_query
-        else:
-            url = f"{settings.OLLAMA_BASE_URL}/api/chat"
-            payload = {
-                "model": settings.OLLAMA_MODEL_NAME,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "stream": False,
-                "options": {"temperature": 0.1}
-            }
-
-            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
-                resp = await client.post(url, json=payload)
-                if resp.status_code == 200:
-                    new_query = resp.json()["message"]["content"].strip()
-                    print(f"[Rewriting] Result: {new_query}")
-                    return new_query
-    except Exception as e:
-        print(f"[Rewriting Error] {e}")
-
-    return user_msg
-
-
-def _extract_query_keywords(text: str) -> List[str]:
-    """提取查询关键词（英文词 + 2字及以上中文片段）"""
-    if not text:
-        return []
-    parts = re.findall(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]{2,}", text.lower())
-    # 去重并过滤过短噪声
-    dedup = []
-    seen = set()
-    for p in parts:
-        if len(p) < 2:
-            continue
-        if p not in seen:
-            seen.add(p)
-            dedup.append(p)
-    return dedup
-
-
-def _query_matches_context(query: str, context: str) -> bool:
-    """仅RAG模式下，要求问题关键词至少命中上下文一次"""
-    keywords = _extract_query_keywords(query)
-    if not keywords:
-        return False
-    ctx = (context or "").lower()
-    return any(k in ctx for k in keywords)
+from core.rag.rewrite import rewrite_query, extract_query_keywords as _extract_query_keywords, query_matches_context as _query_matches_context
 
 
 def _normalize_chat_role(role: str) -> str:
